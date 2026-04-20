@@ -1,0 +1,17 @@
+{
+  "name": "benedictking-skills",
+  "description": "BenedictKing's Agent Skills collection",
+  "author": {
+    "name": "BenedictKing",
+    "url": "https://github.com/BenedictKing"
+  },
+  "version": "1.0.0",
+  "skills": [
+    "./skills/context7-auto-research",
+    "./skills/exa-search",
+    "./skills/firecrawl-scraper",
+    "./skills/tavily-web",
+    "./skills/codex-review"
+  ],
+  "license": "MIT"
+}

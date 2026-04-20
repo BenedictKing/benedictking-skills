@@ -1,0 +1,14 @@
+{
+  "name": "benedictking-skills",
+  "version": "1.0.0",
+  "private": true,
+  "description": "BenedictKing's Agent Skills collection",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BenedictKing/benedictking-skills.git"
+  },
+  "scripts": {
+    "validate": "gh skill publish . --dry-run"
+  }
+}
