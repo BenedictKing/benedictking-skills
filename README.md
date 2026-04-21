@@ -28,6 +28,26 @@ Each skill follows the Agent Skills layout:
 - optional `references/`
 - optional `.env.example`
 
+## Installation
+
+Install the whole collection:
+
+```bash
+gh skill install BenedictKing/benedictking-skills
+```
+
+Install a single skill:
+
+```bash
+gh skill install BenedictKing/benedictking-skills exa-search
+```
+
+Pin a specific release:
+
+```bash
+gh skill install BenedictKing/benedictking-skills exa-search --pin v1.0.0
+```
+
 ## Validation
 
 Validate the whole collection:
@@ -42,11 +62,27 @@ Validate a single script entrypoint if needed:
 node skills/exa-search/scripts/exa-api.cjs --help
 ```
 
-## Publishing
+## Release checklist
+
+### Before publishing
+
+- [ ] Confirm each `skills/<name>/SKILL.md` has a matching `name`
+- [ ] Confirm required frontmatter fields are present
+- [ ] Keep executable code under `skills/<name>/scripts/`
+- [ ] Keep supporting docs under `skills/<name>/references/`
+- [ ] Run `gh skill publish . --dry-run`
+
+### Publish
 
 ```bash
 gh skill publish . --tag v1.0.0
 ```
+
+### After publishing
+
+- [ ] Check the GitHub release page
+- [ ] Spot-check `gh skill install` commands
+- [ ] Update README examples if the pinned version changes
 
 ## License
 
