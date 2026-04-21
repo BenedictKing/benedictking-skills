@@ -1,5 +1,7 @@
 # BenedictKing Skills
 
+[English](./README.md) | 简体中文
+
 BenedictKing 发布的 Agent Skills 合集仓库。
 
 ## 包含的技能

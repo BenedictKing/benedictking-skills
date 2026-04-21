@@ -1,5 +1,7 @@
 # BenedictKing Skills
 
+English | [简体中文](./README_CN.md)
+
 A curated Agent Skills collection published by BenedictKing.
 
 ## Included skills
