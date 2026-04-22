@@ -5,7 +5,7 @@ license: MIT
 compatibility: Designed for Claude Code; requires git and codex CLI; may also need project-specific lint or format tools available in PATH.
 metadata:
   author: BenedictKing
-  version: "2.1.9"
+  version: "2.1.10"
   user-invocable: "true"
 allowed-tools: Bash Read Glob Write Edit
 ---
@@ -197,11 +197,11 @@ git diff --stat HEAD | tail -1
 - ELSE → **Normal** (gpt-5.3-codex + high)
 
 **Example Cases:**
-- ⭐ "50 files changed, 2000 insertions(+), 1500 deletions(-)" → **关键任务**，使用 `model=gpt-5.3-codex model_reasoning_effort=xhigh`，超时 40 分钟（核心架构变更）
-- ✅ "20 files changed, 342 insertions(+), 985 deletions(-)" → **困难任务**，使用 `model=gpt-5.3-codex model_reasoning_effort=xhigh`，超时 15 分钟
-- ✅ "5 files changed, 600 insertions(+), 50 deletions(-)" → **困难任务**，使用 `model=gpt-5.3-codex model_reasoning_effort=xhigh`，超时 15 分钟
-- ❌ "3 files changed, 150 insertions(+), 80 deletions(-)" → **普通任务**，使用 `model=gpt-5.3-codex model_reasoning_effort=high`，超时 10 分钟
-- ❌ "1 file changed, 50 insertions(+)" → **普通任务**，使用 `model=gpt-5.3-codex model_reasoning_effort=high`，超时 10 分钟
+- ⭐ "50 files changed, 2000 insertions(+), 1500 deletions(-)" → **Critical task**, use `model=gpt-5.3-codex model_reasoning_effort=xhigh`, timeout 40 minutes (core architecture change)
+- ✅ "20 files changed, 342 insertions(+), 985 deletions(-)" → **Difficult task**, use `model=gpt-5.3-codex model_reasoning_effort=xhigh`, timeout 15 minutes
+- ✅ "5 files changed, 600 insertions(+), 50 deletions(-)" → **Difficult task**, use `model=gpt-5.3-codex model_reasoning_effort=xhigh`, timeout 15 minutes
+- ❌ "3 files changed, 150 insertions(+), 80 deletions(-)" → **Normal task**, use `model=gpt-5.3-codex model_reasoning_effort=high`, timeout 10 minutes
+- ❌ "1 file changed, 50 insertions(+)" → **Normal task**, use `model=gpt-5.3-codex model_reasoning_effort=high`, timeout 10 minutes
 
 **Invoke codex-runner Subtask:**
 
@@ -268,8 +268,34 @@ If Codex reports **P0 / P1 / P2** issues, you must **proactively fix them immedi
 
 1. **P0 / P1 / P2 present** → directly modify code or related files to fix the issue
 2. **After fixing** → rerun the necessary lint / validation / review command to confirm the issue is resolved
-3. **Only report completion after recheck** → clearly state what was fixed and what verification passed
-4. **P3 or lower / suggestion only** → may report without automatic modification unless the user explicitly asks for further cleanup
+3. **If rerun still reports any P0 / P1 / P2** → continue fixing and rerunning review in a loop
+4. **Only report completion after the rerun review reports no P0 / P1 / P2 issues**
+5. **Clearly state what was fixed and what verification passed**
+6. **P3 or lower / suggestion only** → may report without automatic modification unless the user explicitly asks for further cleanup
+
+**Review loop rule:**
+- The workflow is not successful while any P0 / P1 / P2 issue remains
+- After each round of fixes, rerun the appropriate lint / validation / codex review steps
+- Repeat until Codex no longer reports P0 / P1 / P2 issues
+- Only then treat the review as passed and return the final result
+
+**Final pass reporting rule:**
+- After the final rerun passes, explicitly report that the final review is complete and passed
+- The final result should include:
+  - Codex final conclusion (for example: no functional errors, obvious regressions, or merge-blocking defects found)
+  - Test results that actually ran in this round
+  - Lint / formatting / validation results that actually ran in this round
+- Do not claim checks that were not actually executed
+- Prefer a concise final format similar to:
+
+```text
+⏺ Final review complete. Passed.
+
+Result:
+- Codex final conclusion: No defects were found that would cause functional errors, obvious regressions, or block merge
+- Tests passed: <actual test command(s) executed>
+- Lint / validation passed: <actual lint, fmt, vet, or other validation command(s) executed>
+```
 
 **Fix priority:**
 - **P0**: Blocker, security, data loss, correctness failure → must fix first
@@ -286,7 +312,7 @@ If Codex reports **P0 / P1 / P2** issues, you must **proactively fix them immedi
 1. **[GATE] Check CHANGELOG** - Auto-generate and write if not updated (leverage current context to understand change intention)
 2. **[PREPARE] Stage Untracked Files** - Add all new files to git staging area (avoid codex P1 error)
 3. **[EXEC] Task → Lint + codex review** - Invoke Task tool to execute Lint and codex (isolated context, reduce waste)
-4. **[FIX] Severity-Driven Self-Correction** - Fix code or update description when intention ≠ implementation; proactively fix P0/P1/P2 issues and rerun checks
+4. **[FIX LOOP] Severity-Driven Self-Correction** - Fix code or update description when intention ≠ implementation; if any P0/P1/P2 appears, keep fixing and rerunning checks until none remain
 
 ## Codex Review Command Reference
 
