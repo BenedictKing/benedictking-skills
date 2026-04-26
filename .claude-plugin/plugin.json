@@ -11,7 +11,8 @@
     "./skills/exa-search",
     "./skills/firecrawl-scraper",
     "./skills/tavily-web",
-    "./skills/codex-review"
+    "./skills/codex-review",
+    "./skills/gpt-image-2-api"
   ],
   "license": "MIT"
 }
