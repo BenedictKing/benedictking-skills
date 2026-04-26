@@ -1,13 +1,18 @@
 ---
 name: gpt-image-2-api
-description: Generate images with gpt-image-2 through a third-party OpenAI-compatible API using .env-configured OPENAI_API_KEY and OPENAI_BASE_URL values. Use when the user asks to create images, visual assets, illustrations, or image variations with a configurable API endpoint.
+description: Generate and edit images with gpt-image-2 through a third-party OpenAI-compatible API using .env-configured OPENAI_API_KEY and OPENAI_BASE_URL values. Use when the user asks to create images, edit reference images, create visual assets, illustrations, or image variations with a configurable API endpoint.
 license: MIT
+compatibility: Designed for Claude Code; requires Node.js and access to an OpenAI-compatible image API.
+metadata:
+  author: BenedictKing
+  version: "1.1.0"
+  user-invocable: "true"
 allowed-tools: Bash Read Write
 ---
 # gpt-image-2-api
 
 ## Purpose
-Generate images with gpt-image-2 through a third-party OpenAI-compatible API using .env-configured OPENAI_API_KEY and OPENAI_BASE_URL values. Use when the user asks to create images, visual assets, illustrations, or image variations with a configurable API endpoint.
+Generate and edit images with gpt-image-2 through a third-party OpenAI-compatible API using .env-configured OPENAI_API_KEY and OPENAI_BASE_URL values. Use when the user asks to create images, edit reference images, create visual assets, illustrations, or image variations with a configurable API endpoint.
 
 ## Configuration
 Require `.env` values managed by `skill-master env set`:
@@ -22,14 +27,16 @@ Require `.env` values managed by `skill-master env set`:
 
 ## Workflow
 1. Confirm `.env` is configured before making API calls.
-2. Use `scripts/gpt-image-2-api.mjs` for text-to-image requests.
+2. Use `scripts/gpt-image-2-api.mjs` for text-to-image and image-edit requests.
 3. Use `OPENAI_IMAGE_PROTOCOL=openai_images` for `/images/generations`; use `OPENAI_IMAGE_PROTOCOL=openai_chat` for `/chat/completions`.
-4. Save generated files under the user requested output directory, or the current working directory when unspecified.
-5. Report saved file paths and any API errors exactly.
+4. Add one or more `--image <path>` arguments to edit/reference an input image.
+5. Use `--mask <path>` only with `openai_images`; `openai_chat` does not support masks.
+6. Save generated files under the user requested output directory, or the current working directory when unspecified.
+7. Report saved file paths and any API errors exactly.
 
 ## Available Scripts
 
-- `scripts/gpt-image-2-api.mjs` — Sends a text prompt to the configured OpenAI-compatible image generation endpoint and saves returned images.
+- `scripts/gpt-image-2-api.mjs` — Sends a text prompt, optionally with input images, to the configured OpenAI-compatible endpoint and saves returned images.
 
 ## Generate Image
 
@@ -38,6 +45,20 @@ node scripts/gpt-image-2-api.mjs --prompt "a concise image prompt" --output ./ge
 ```
 
 Use `--base-url`, `--model`, `--protocol`, `--size`, `--quality`, and `--extra-json` only when the user or endpoint requires overrides.
+
+## Edit Image
+
+```bash
+node scripts/gpt-image-2-api.mjs --prompt "make the dog wear a red scarf" --image ./input.png --output ./edited-images
+```
+
+Multiple input images are supported by repeating `--image`. `--input` is accepted as an alias for `--image`.
+
+Mask example for `openai_images`:
+
+```bash
+node scripts/gpt-image-2-api.mjs --protocol openai_images --prompt "replace the background" --image ./input.png --mask ./mask.png --output ./edited-images
+```
 
 ```bash
 OPENAI_IMAGE_PROTOCOL=openai_chat node scripts/gpt-image-2-api.mjs --prompt "a concise image prompt" --output ./generated-images

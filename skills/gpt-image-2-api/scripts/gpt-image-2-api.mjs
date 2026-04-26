@@ -50,6 +50,9 @@ function hasFlag(name) {
 const VALUE_ARGS = new Set([
   '--base-url',
   '--extra-json',
+  '--image',
+  '--input',
+  '--mask',
   '--model',
   '--output',
   '--prompt',
@@ -72,6 +75,18 @@ function collectPositionalPrompt() {
   return values.join(' ');
 }
 
+function readArgs(name) {
+  const values = [];
+  for (let index = 2; index < process.argv.length; index += 1) {
+    if (process.argv[index] !== name) continue;
+    const value = process.argv[index + 1];
+    if (!value || value.startsWith('--')) throw new Error(`${name} requires a value`);
+    values.push(value);
+    index += 1;
+  }
+  return values;
+}
+
 function normalizeProtocol(value) {
   const normalized = String(value || 'openai_images').trim().toLowerCase().replace(/-/g, '_');
   if (['image', 'images', 'openai_images'].includes(normalized)) return 'openai_images';
@@ -88,22 +103,54 @@ function parseJsonObject(value, source) {
   return parsed;
 }
 
-function endpointPath(protocol) {
-  return protocol === 'openai_chat' ? '/chat/completions' : '/images/generations';
+function endpointPath(protocol, operation) {
+  if (protocol === 'openai_chat') return '/chat/completions';
+  return operation === 'edit' ? '/images/edits' : '/images/generations';
 }
 
-function buildRequestBody({ protocol, model, prompt, size, quality, extraParams }) {
+function buildRequestBody({ protocol, operation, model, prompt, size, quality, inputImages, mask, extraParams }) {
   if (protocol === 'openai_chat') {
+    if (mask) throw new Error('mask is not supported when using openai_chat protocol');
+    const content = [{ type: 'text', text: prompt }];
+    for (const image of inputImages) {
+      content.push({
+        type: 'image_url',
+        image_url: { url: image.dataUrl },
+      });
+    }
+
     return {
       model,
       messages: [
         {
           role: 'user',
-          content: [{ type: 'text', text: prompt }],
+          content,
         },
       ],
       ...extraParams,
     };
+  }
+
+  if (operation === 'edit') {
+    const body = {
+      model,
+      prompt,
+      image: inputImages.map((image) => ({
+        name: image.name,
+        mime_type: image.mimeType,
+        data: image.base64,
+      })),
+    };
+    if (mask) {
+      body.mask = {
+        name: mask.name,
+        mime_type: mask.mimeType,
+        data: mask.base64,
+      };
+    }
+    if (size) body.size = size;
+    if (quality) body.quality = quality;
+    return { ...body, ...extraParams };
   }
 
   const body = { model, prompt };
@@ -121,6 +168,28 @@ function decodeDataUrl(value) {
   const [header, data] = value.split(',', 2);
   const mimeType = header.replace(/^data:/, '').split(';', 1)[0] || 'image/png';
   return decodeBase64Image(data, mimeType);
+}
+
+function mimeTypeForPath(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.png') return 'image/png';
+  if (ext === '.webp') return 'image/webp';
+  if (ext === '.gif') return 'image/gif';
+  return 'application/octet-stream';
+}
+
+async function readImageInput(filePath) {
+  const resolvedPath = path.resolve(filePath);
+  const bytes = await readFile(resolvedPath);
+  const mimeType = mimeTypeForPath(resolvedPath);
+  const base64 = bytes.toString('base64');
+  return {
+    name: path.basename(resolvedPath),
+    mimeType,
+    base64,
+    dataUrl: `data:${mimeType};base64,${base64}`,
+  };
 }
 
 function extractMarkdownImageUrl(text) {
@@ -218,6 +287,7 @@ function extensionForMimeType(mimeType) {
 function printHelp() {
   console.log(`Usage:
   node scripts/gpt-image-2-api.mjs --prompt "image prompt" [--output ./out] [--size 1024x1024] [--protocol openai_images|openai_chat]
+  node scripts/gpt-image-2-api.mjs --prompt "edit prompt" --image ./input.png [--image ./reference.png] [--mask ./mask.png] [--output ./out]
 
 Environment:
   OPENAI_API_KEY      API key for the OpenAI-compatible endpoint
@@ -245,13 +315,19 @@ async function main() {
   const quality = readArg('--quality', process.env.OPENAI_IMAGE_QUALITY);
   const extraParams = parseJsonObject(readArg('--extra-json', process.env.OPENAI_IMAGE_EXTRA_JSON), 'OPENAI_IMAGE_EXTRA_JSON');
   const outputDir = path.resolve(readArg('--output', process.cwd()));
+  const imagePaths = [...readArgs('--image'), ...readArgs('--input')];
+  const inputImages = await Promise.all(imagePaths.map(readImageInput));
+  const maskPath = readArg('--mask');
+  const mask = maskPath ? await readImageInput(maskPath) : undefined;
+  const operation = inputImages.length > 0 ? 'edit' : 'generate';
 
   if (!apiKey) throw new Error('OPENAI_API_KEY is required');
   if (!prompt) throw new Error('Prompt is required. Use --prompt "..."');
+  if (mask && operation !== 'edit') throw new Error('--mask requires at least one --image');
 
-  const body = buildRequestBody({ protocol, model, prompt, size, quality, extraParams });
+  const body = buildRequestBody({ protocol, operation, model, prompt, size, quality, inputImages, mask, extraParams });
 
-  const response = await fetch(`${baseUrl}${endpointPath(protocol)}`, {
+  const response = await fetch(`${baseUrl}${endpointPath(protocol, operation)}`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
