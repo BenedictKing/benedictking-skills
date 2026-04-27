@@ -201,6 +201,13 @@ function decodeDataUrl(value) {
   return decodeBase64Image(data, mimeType);
 }
 
+function decodeBase64Image(base64, mimeType = 'image/png') {
+  return {
+    bytes: Buffer.from(base64, 'base64'),
+    mimeType,
+  };
+}
+
 function mimeTypeForPath(filePath) {
   const ext = path.extname(filePath).toLowerCase();
   if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';

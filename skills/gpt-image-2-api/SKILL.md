@@ -5,7 +5,7 @@ license: MIT
 compatibility: Designed for Claude Code; requires Node.js and access to an OpenAI-compatible image API.
 metadata:
   author: BenedictKing
-  version: "1.2.0"
+  version: "1.2.1"
   user-invocable: "true"
 allowed-tools: Bash Read Write
 ---
