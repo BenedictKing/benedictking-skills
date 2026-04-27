@@ -48,19 +48,29 @@ function hasFlag(name) {
 }
 
 const VALUE_ARGS = new Set([
+  '--background',
   '--base-url',
   '--extra-json',
   '--format',
   '--image',
   '--input',
+  '--input-fidelity',
   '--mask',
   '--model',
+  '--moderation',
   '--n',
   '--output',
+  '--output-compression',
+  '--output-format',
+  '--partial-images',
   '--prompt',
   '--protocol',
   '--quality',
+  '--response-format',
   '--size',
+  '--stream',
+  '--style',
+  '--user',
 ]);
 
 function collectPositionalPrompt() {
@@ -110,9 +120,8 @@ function endpointPath(protocol, operation) {
   return operation === 'edit' ? '/images/edits' : '/images/generations';
 }
 
-function buildRequestBody({ protocol, operation, model, prompt, size, quality, n, format, inputImages, mask, extraParams }) {
+function buildRequestBody({ protocol, model, prompt, size, quality, n, responseFormat, outputFormat, inputImages, extraParams }) {
   if (protocol === 'openai_chat') {
-    if (mask) throw new Error('mask is not supported when using openai_chat protocol');
     const content = [{ type: 'text', text: prompt }];
     for (const image of inputImages) {
       content.push({
@@ -135,39 +144,54 @@ function buildRequestBody({ protocol, operation, model, prompt, size, quality, n
     return chatBody;
   }
 
-  if (operation === 'edit') {
-    const body = {
-      model,
-      prompt,
-      image: inputImages.map((image) => ({
-        name: image.name,
-        mime_type: image.mimeType,
-        data: image.base64,
-      })),
-    };
-    if (mask) {
-      body.mask = {
-        name: mask.name,
-        mime_type: mask.mimeType,
-        data: mask.base64,
-      };
-    }
-    if (size) body.size = size;
-    if (quality) body.quality = quality;
-    if (n && n !== 1) body.n = n;
-    if (format) body.format = format;
-    return { ...body, ...extraParams };
-  }
-
   const body = { model, prompt, n };
   if (size) body.size = size;
   if (quality) body.quality = quality;
-  if (format) body.format = format;
+  if (responseFormat) body.response_format = responseFormat;
+  if (outputFormat) body.output_format = outputFormat;
   return { ...body, ...extraParams };
 }
 
-function decodeBase64Image(value, mimeType = 'image/png') {
-  return { bytes: Buffer.from(value, 'base64'), mimeType };
+function buildMultipartBody({ model, prompt, size, quality, n, responseFormat, outputFormat, inputImages, mask, extraParams }) {
+  const form = new FormData();
+  form.set('model', model);
+  form.set('prompt', prompt);
+  if (size) form.set('size', size);
+  if (quality) form.set('quality', quality);
+  if (n) form.set('n', String(n));
+  if (responseFormat) form.set('response_format', responseFormat);
+  if (outputFormat) form.set('output_format', outputFormat);
+
+  for (const image of inputImages) {
+    form.append('image', new Blob([image.bytes], { type: image.mimeType }), image.name);
+  }
+
+  if (mask) {
+    if (mask === 'auto') {
+      form.set('mask', 'auto');
+    } else {
+      form.set('mask', new Blob([mask.bytes], { type: mask.mimeType }), mask.name);
+    }
+  }
+
+  for (const [key, value] of Object.entries(extraParams)) {
+    appendFormValue(form, key, value);
+  }
+
+  return form;
+}
+
+function appendFormValue(form, key, value) {
+  if (value === undefined || value === null) return;
+  if (Array.isArray(value)) {
+    for (const item of value) appendFormValue(form, `${key}[]`, item);
+    return;
+  }
+  if (typeof value === 'object') {
+    form.set(key, JSON.stringify(value));
+    return;
+  }
+  form.set(key, String(value));
 }
 
 function decodeDataUrl(value) {
@@ -291,27 +315,166 @@ function extensionForMimeType(mimeType) {
   return '.bin';
 }
 
+function parseOptionalInt(value, name) {
+  if (value === undefined || value === null || value === '') return undefined;
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isInteger(parsed)) throw new Error(`${name} must be an integer`);
+  return parsed;
+}
+
+function buildExtraParams({ operation, background, moderation, outputCompression, outputFormat, partialImages, inputFidelity, style, user }) {
+  const extra = {};
+  if (background) extra.background = background;
+  if (moderation) extra.moderation = moderation;
+  if (outputCompression !== undefined) extra.output_compression = outputCompression;
+  if (outputFormat) extra.output_format = outputFormat;
+  if (partialImages !== undefined) extra.partial_images = partialImages;
+  if (operation === 'edit' && inputFidelity) extra.input_fidelity = inputFidelity;
+  if (operation === 'generate' && style) extra.style = style;
+  if (user) extra.user = user;
+  return extra;
+}
+
+function validateArgs({ protocol, operation, n, responseFormat, outputFormat, background, partialImages, size, inputFidelity, style, stream, hasMask }) {
+  if (!Number.isInteger(n) || n < 1 || n > 10) throw new Error('--n must be an integer between 1 and 10');
+  if (background && !['transparent', 'opaque', 'auto'].includes(background)) {
+    throw new Error('--background must be one of: transparent, opaque, auto');
+  }
+  if (responseFormat && !['url', 'b64_json'].includes(responseFormat)) {
+    throw new Error('--response-format must be url or b64_json');
+  }
+  if (outputFormat && !['png', 'jpeg', 'webp'].includes(outputFormat)) {
+    throw new Error('--output-format must be one of: png, jpeg, webp');
+  }
+  if (partialImages !== undefined && (partialImages < 0 || partialImages > 3)) {
+    throw new Error('--partial-images must be an integer between 0 and 3');
+  }
+  if (inputFidelity && !['high', 'low'].includes(inputFidelity)) {
+    throw new Error('--input-fidelity must be high or low');
+  }
+  if (style && !['vivid', 'natural'].includes(style)) {
+    throw new Error('--style must be vivid or natural');
+  }
+  if (background === 'transparent' && outputFormat && !['png', 'webp'].includes(outputFormat)) {
+    throw new Error('transparent background requires --output-format to be png or webp');
+  }
+  if (protocol === 'openai_chat') {
+    if (responseFormat) throw new Error('--response-format is not supported with openai_chat');
+    if (outputFormat) throw new Error('--output-format is not supported with openai_chat');
+    if (background) throw new Error('--background is not supported with openai_chat');
+    if (partialImages !== undefined) throw new Error('--partial-images is not supported with openai_chat');
+    if (inputFidelity) throw new Error('--input-fidelity is not supported with openai_chat');
+    if (style) throw new Error('--style is not supported with openai_chat');
+    if (stream !== undefined) throw new Error('--stream is not supported with openai_chat');
+    if (hasMask) throw new Error('--mask is not supported with openai_chat');
+  }
+  if (operation === 'edit' && size && !['auto', '1024x1024', '1536x1024', '1024x1536'].includes(size)) {
+    throw new Error('image edits only support --size auto, 1024x1024, 1536x1024, or 1024x1536');
+  }
+}
+
+function mergeExtraParams(baseParams, cliExtraParams) {
+  return { ...baseParams, ...cliExtraParams };
+}
+
+function buildRequestOptions({ protocol, operation, apiKey, baseUrl, model, prompt, size, quality, n, responseFormat, outputFormat, inputImages, mask, extraParams }) {
+  const endpoint = `${baseUrl}${endpointPath(protocol, operation)}`;
+  const headers = { Authorization: `Bearer ${apiKey}` };
+
+  if (protocol === 'openai_images' && operation === 'edit') {
+    return {
+      url: endpoint,
+      options: {
+        method: 'POST',
+        headers,
+        body: buildMultipartBody({ model, prompt, size, quality, n, responseFormat, outputFormat, inputImages, mask, extraParams }),
+      },
+    };
+  }
+
+  headers['Content-Type'] = 'application/json';
+  return {
+    url: endpoint,
+    options: {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(buildRequestBody({ protocol, model, prompt, size, quality, n, responseFormat, outputFormat, inputImages, extraParams })),
+    },
+  };
+}
+
+function parseSseEvents(text) {
+  const events = [];
+  for (const chunk of text.split(/\n\n+/)) {
+    const lines = chunk.split('\n');
+    const dataLines = lines.filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim());
+    if (dataLines.length === 0) continue;
+    const dataText = dataLines.join('\n');
+    if (!dataText || dataText === '[DONE]') continue;
+    try {
+      events.push(JSON.parse(dataText));
+    } catch {
+      continue;
+    }
+  }
+  return events;
+}
+
+function normalizePayload(protocol, operation, text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    if (protocol !== 'openai_images') {
+      throw new Error(`Image API returned non-JSON response: ${text.slice(0, 1000)}`);
+    }
+    const events = parseSseEvents(text);
+    const finalEvent = [...events].reverse().find((event) => typeof event?.b64_json === 'string');
+    if (!finalEvent) throw new Error(`Image API returned non-JSON response: ${text.slice(0, 1000)}`);
+    const kind = operation === 'edit' ? 'image_edit' : 'image_generation';
+    return {
+      data: [{ b64_json: finalEvent.b64_json, mime_type: finalEvent.output_format ? `image/${finalEvent.output_format}` : 'image/png' }],
+      usage: finalEvent.usage,
+      output_format: finalEvent.output_format,
+      background: finalEvent.background,
+      quality: finalEvent.quality,
+      size: finalEvent.size,
+      stream_event_type: `${kind}.completed`,
+    };
+  }
+}
 function printHelp() {
   console.log(`Usage:
-  node scripts/gpt-image-2-api.mjs --prompt "image prompt" [--output ./out] [--size 1024x1024] [--n 1] [--format png|jpeg|webp] [--quality low|medium|high|auto] [--protocol openai_images|openai_chat]
-  node scripts/gpt-image-2-api.mjs --prompt "edit prompt" --image ./input.png [--image ./reference.png] [--mask ./mask.png] [--output ./out]
+  node scripts/gpt-image-2-api.mjs --prompt "image prompt" [--output ./out] [--size 1024x1024] [--n 1] [--output-format png|jpeg|webp] [--quality low|medium|high|auto] [--protocol openai_images|openai_chat]
+  node scripts/gpt-image-2-api.mjs --prompt "edit prompt" --image ./input.png [--image ./reference.png] [--mask ./mask.png|auto] [--output ./out]
 
 Options:
-  --n <int>           Number of images (1-10), defaults to 1
-  --format <str>      Image format: png, jpeg, webp
-  --quality <str>     Image quality: low, medium, high, auto
-  --size <str>        Image size: 1024x1024, 1536x1024, 1024x1536, 2048x2048, 2048x1152, 3840x2160, 2160x3840, auto
+  --n <int>                   Number of images (1-10), defaults to 1
+  --size <str>                Image size; edits support auto, 1024x1024, 1536x1024, 1024x1536
+  --quality <str>             Image quality: low, medium, high, auto
+  --response-format <str>     Response format: url, b64_json
+  --output-format <str>       Output format: png, jpeg, webp
+  --output-compression <int>  Compression level 0-100 for jpeg/webp
+  --background <str>          Background: transparent, opaque, auto
+  --moderation <str>          Moderation: low, auto
+  --partial-images <int>      Streaming partial images count: 0-3
+  --input-fidelity <str>      Edit fidelity: high, low
+  --style <str>               Generation style for dall-e-3: vivid, natural
+  --user <str>                End-user identifier for abuse monitoring
+  --format <str>              Legacy alias kept for compatibility
 
 Environment:
-  OPENAI_API_KEY        API key for the OpenAI-compatible endpoint
-  OPENAI_BASE_URL       Base URL, for example http://127.0.0.1:3688/v1
-  OPENAI_IMAGE_MODEL    Image model, defaults to gpt-image-2
-  OPENAI_IMAGE_PROTOCOL openai_images or openai_chat, defaults to openai_images
-  OPENAI_IMAGE_SIZE     Image size, defaults to 1024x1024
-  OPENAI_IMAGE_QUALITY  Optional image quality
-  OPENAI_IMAGE_N        Number of images (1-10), defaults to 1
-  OPENAI_IMAGE_FORMAT   Optional image format: png, jpeg, webp
-  OPENAI_IMAGE_EXTRA_JSON  Optional JSON object merged into the request body
+  OPENAI_API_KEY              API key for the OpenAI-compatible endpoint
+  OPENAI_BASE_URL             Base URL, for example http://127.0.0.1:3688/v1
+  OPENAI_IMAGE_MODEL          Image model, defaults to gpt-image-2
+  OPENAI_IMAGE_PROTOCOL       openai_images or openai_chat, defaults to openai_images
+  OPENAI_IMAGE_SIZE           Image size, defaults to 1024x1024
+  OPENAI_IMAGE_QUALITY        Optional image quality
+  OPENAI_IMAGE_N              Number of images (1-10), defaults to 1
+  OPENAI_IMAGE_FORMAT         Legacy output format alias: png, jpeg, webp
+  OPENAI_IMAGE_RESPONSE_FORMAT Optional response format: url, b64_json
+  OPENAI_IMAGE_BACKGROUND     Optional background: transparent, opaque, auto
+  OPENAI_IMAGE_MODERATION     Optional moderation: low, auto
+  OPENAI_IMAGE_EXTRA_JSON     Optional JSON object merged into the request body
 `);
 }
 
@@ -331,36 +494,69 @@ async function main() {
   const size = readArg('--size', process.env.OPENAI_IMAGE_SIZE || '1024x1024');
   const quality = readArg('--quality', process.env.OPENAI_IMAGE_QUALITY);
   const n = parseInt(readArg('--n', process.env.OPENAI_IMAGE_N || '1'), 10);
-  const format = readArg('--format', process.env.OPENAI_IMAGE_FORMAT);
-  const extraParams = parseJsonObject(readArg('--extra-json', process.env.OPENAI_IMAGE_EXTRA_JSON), 'OPENAI_IMAGE_EXTRA_JSON');
+  const legacyFormat = readArg('--format', process.env.OPENAI_IMAGE_FORMAT);
+  const responseFormat = readArg('--response-format', process.env.OPENAI_IMAGE_RESPONSE_FORMAT);
+  const outputFormat = readArg('--output-format', process.env.OPENAI_IMAGE_OUTPUT_FORMAT || legacyFormat);
+  const background = readArg('--background', process.env.OPENAI_IMAGE_BACKGROUND);
+  const moderation = readArg('--moderation', process.env.OPENAI_IMAGE_MODERATION);
+  const outputCompression = parseOptionalInt(readArg('--output-compression', process.env.OPENAI_IMAGE_OUTPUT_COMPRESSION), '--output-compression');
+  const partialImages = parseOptionalInt(readArg('--partial-images', process.env.OPENAI_IMAGE_PARTIAL_IMAGES), '--partial-images');
+  const inputFidelity = readArg('--input-fidelity', process.env.OPENAI_IMAGE_INPUT_FIDELITY);
+  const style = readArg('--style', process.env.OPENAI_IMAGE_STYLE);
+  const streamValue = readArg('--stream', process.env.OPENAI_IMAGE_STREAM);
+  const stream = streamValue === undefined ? undefined : streamValue === 'true';
+  const user = readArg('--user', process.env.OPENAI_IMAGE_USER);
+  const cliExtraParams = parseJsonObject(readArg('--extra-json', process.env.OPENAI_IMAGE_EXTRA_JSON), 'OPENAI_IMAGE_EXTRA_JSON');
   const outputDir = path.resolve(readArg('--output', process.cwd()));
   const imagePaths = [...readArgs('--image'), ...readArgs('--input')];
   const inputImages = await Promise.all(imagePaths.map(readImageInput));
-  const maskPath = readArg('--mask');
-  const mask = maskPath ? await readImageInput(maskPath) : undefined;
+  const maskValue = readArg('--mask');
+  const mask = maskValue && maskValue !== 'auto' ? await readImageInput(maskValue) : maskValue;
   const operation = inputImages.length > 0 ? 'edit' : 'generate';
 
   if (!apiKey) throw new Error('OPENAI_API_KEY is required');
   if (!prompt) throw new Error('Prompt is required. Use --prompt "..."');
   if (mask && operation !== 'edit') throw new Error('--mask requires at least one --image');
 
-  const body = buildRequestBody({ protocol, operation, model, prompt, size, quality, n, format, inputImages, mask, extraParams });
+  validateArgs({ protocol, operation, n, responseFormat, outputFormat, background, partialImages, size, inputFidelity, style, stream, hasMask: Boolean(maskValue) });
 
-  const response = await fetch(`${baseUrl}${endpointPath(protocol, operation)}`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
+  const baseExtraParams = buildExtraParams({
+    operation,
+    background,
+    moderation,
+    outputCompression,
+    outputFormat,
+    partialImages,
+    inputFidelity,
+    style,
+    user,
+  });
+  if (stream !== undefined) baseExtraParams.stream = stream;
+  const extraParams = mergeExtraParams(baseExtraParams, cliExtraParams);
+  const { url, options } = buildRequestOptions({
+    protocol,
+    operation,
+    apiKey,
+    baseUrl,
+    model,
+    prompt,
+    size,
+    quality,
+    n,
+    responseFormat,
+    outputFormat,
+    inputImages,
+    mask,
+    extraParams,
   });
 
+  const response = await fetch(url, options);
   const text = await response.text();
   if (!response.ok) {
     throw new Error(`Image API failed with HTTP ${response.status}: ${text}`);
   }
 
-  const payload = JSON.parse(text);
+  const payload = normalizePayload(protocol, operation, text);
   await mkdir(outputDir, { recursive: true });
   const saved = [];
   const images = collectImages(protocol, payload);

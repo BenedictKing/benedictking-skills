@@ -5,7 +5,7 @@ license: MIT
 compatibility: Designed for Claude Code; requires Node.js and access to an OpenAI-compatible image API.
 metadata:
   author: BenedictKing
-  version: "1.1.1"
+  version: "1.2.0"
   user-invocable: "true"
 allowed-tools: Bash Read Write
 ---
@@ -21,20 +21,25 @@ Require `.env` values managed by `skill-master env set`:
 - `OPENAI_BASE_URL`: OpenAI-compatible base URL, for example `http://127.0.0.1:3688/v1`
 - `OPENAI_IMAGE_MODEL`: image model name, defaults to `gpt-image-2`
 - `OPENAI_IMAGE_PROTOCOL`: `openai_images` or `openai_chat`, defaults to `openai_images`
-- `OPENAI_IMAGE_SIZE`: image size for `openai_images`, defaults to `1024x1024`
-- `OPENAI_IMAGE_QUALITY`: optional image quality for `openai_images`
+- `OPENAI_IMAGE_SIZE`: image size, defaults to `1024x1024`
+- `OPENAI_IMAGE_QUALITY`: optional image quality
 - `OPENAI_IMAGE_N`: number of images (1-10), defaults to `1`
-- `OPENAI_IMAGE_FORMAT`: optional image format (`png`, `jpeg`, `webp`)
+- `OPENAI_IMAGE_OUTPUT_FORMAT`: optional output format (`png`, `jpeg`, `webp`)
+- `OPENAI_IMAGE_FORMAT`: legacy alias for `OPENAI_IMAGE_OUTPUT_FORMAT`
+- `OPENAI_IMAGE_RESPONSE_FORMAT`: optional response format (`url`, `b64_json`)
+- `OPENAI_IMAGE_BACKGROUND`: optional background (`transparent`, `opaque`, `auto`)
+- `OPENAI_IMAGE_MODERATION`: optional moderation level (`low`, `auto`)
 - `OPENAI_IMAGE_EXTRA_JSON`: optional JSON object merged into the request body
 
 ## Workflow
 1. Confirm `.env` is configured before making API calls.
 2. Use `scripts/gpt-image-2-api.mjs` for text-to-image and image-edit requests.
-3. Use `OPENAI_IMAGE_PROTOCOL=openai_images` for `/images/generations`; use `OPENAI_IMAGE_PROTOCOL=openai_chat` for `/chat/completions`.
-4. Add one or more `--image <path>` arguments to edit/reference an input image.
-5. Use `--mask <path>` only with `openai_images`; `openai_chat` does not support masks.
-6. Save generated files under the user requested output directory, or the current working directory when unspecified.
-7. Report saved file paths and any API errors exactly.
+3. `openai_images` generation uses `/images/generations` with JSON; `openai_images` editing uses `/images/edits` with `multipart/form-data`.
+4. Use `OPENAI_IMAGE_PROTOCOL=openai_chat` only when the endpoint lacks `/images/*` support; it does not support `--mask`, `--background`, `--output-format`, or streaming image events.
+5. Add one or more `--image <path>` arguments to edit/reference an input image.
+6. Use `--mask <path>` or `--mask auto` only with `openai_images` edits.
+7. Save generated files under the user requested output directory, or the current working directory when unspecified.
+8. Report saved file paths and any API errors exactly.
 
 ## Available Scripts
 
@@ -43,10 +48,10 @@ Require `.env` values managed by `skill-master env set`:
 ## Generate Image
 
 ```bash
-node scripts/gpt-image-2-api.mjs --prompt "a concise image prompt" --output ./generated-images --size 1024x1024 --n 1
+node scripts/gpt-image-2-api.mjs --prompt "a concise image prompt" --output ./generated-images --size 1024x1024 --n 1 --output-format png
 ```
 
-Use `--base-url`, `--model`, `--protocol`, `--size`, `--quality`, `--n`, `--format`, and `--extra-json` only when the user or endpoint requires overrides.
+Use `--base-url`, `--model`, `--protocol`, `--size`, `--quality`, `--n`, `--output-format`, `--background`, `--moderation`, `--response-format`, and `--extra-json` only when the user or endpoint requires overrides.
 
 ## Edit Image
 
@@ -62,6 +67,14 @@ Mask example for `openai_images`:
 node scripts/gpt-image-2-api.mjs --protocol openai_images --prompt "replace the background" --image ./input.png --mask ./mask.png --output ./edited-images
 ```
 
+Auto-mask example for `openai_images`:
+
+```bash
+node scripts/gpt-image-2-api.mjs --protocol openai_images --prompt "remove the background" --image ./input.png --mask auto --background transparent --output-format png --output ./edited-images
+```
+
+Fallback example when the endpoint only supports chat completions:
+
 ```bash
 OPENAI_IMAGE_PROTOCOL=openai_chat node scripts/gpt-image-2-api.mjs --prompt "a concise image prompt" --output ./generated-images
 ```
@@ -70,25 +83,33 @@ OPENAI_IMAGE_PROTOCOL=openai_chat node scripts/gpt-image-2-api.mjs --prompt "a c
 
 | Parameter | Required | Type | Default | Description |
 |-----------|----------|------|---------|-------------|
-| `prompt` | yes | string | — | Text description, max 1000 characters |
-| `model` | yes | string | `gpt-image-2` | Model name |
-| `n` | yes | integer | `1` | Number of images, range 1–10 |
-| `size` | no | string | `1024x1024` | See [valid sizes](#valid-sizes) |
-| `quality` | no | string | `auto` | `low`, `medium`, `high`, `auto` |
-| `format` | no | string | — | `png`, `jpeg`, `webp` |
+| `prompt` | yes | string | — | Text description for generation or edit |
+| `model` | no | string | `gpt-image-2` | Image model name |
+| `n` | no | integer | `1` | Number of images, range 1–10 |
+| `size` | no | string | `1024x1024` | Output size; edits support `auto`, `1024x1024`, `1536x1024`, `1024x1536` |
+| `quality` | no | string | endpoint default | `low`, `medium`, `high`, `auto` |
+| `output-format` | no | string | endpoint default | `png`, `jpeg`, `webp` |
+| `response-format` | no | string | endpoint default | `url`, `b64_json`; mainly for DALL·E-compatible responses |
+| `background` | no | string | endpoint default | `transparent`, `opaque`, `auto` |
+| `moderation` | no | string | endpoint default | `low`, `auto` |
+| `output-compression` | no | integer | endpoint default | Compression 0–100 for `jpeg`/`webp` |
+| `partial-images` | no | integer | endpoint default | Streaming partial image count `0`–`3` |
+| `input-fidelity` | no | string | endpoint default | Edit fidelity: `high`, `low` |
+| `style` | no | string | endpoint default | Generation style for `dall-e-3`: `vivid`, `natural` |
+| `user` | no | string | — | End-user identifier |
+| `format` | no | string | — | Legacy alias for `output-format` |
 
 ### Valid Sizes
 
-| Size | Resolution |
-|------|------------|
-| `1024x1024` | Square (default) |
-| `1536x1024` | Landscape |
-| `1024x1536` | Portrait |
-| `2048x2048` | 2K Square |
-| `2048x1152` | 2K Landscape |
-| `3840x2160` | 4K Landscape |
-| `2160x3840` | 4K Portrait |
-| `auto` | Auto-determined |
+| Endpoint / Model Family | Valid Sizes |
+|-------------------------|-------------|
+| GPT image generations | `auto`, `1024x1024`, `1536x1024`, `1024x1536` |
+| GPT image edits | `auto`, `1024x1024`, `1536x1024`, `1024x1536` |
+| `dall-e-2` generations | `256x256`, `512x512`, `1024x1024` |
+| `dall-e-3` generations | `1024x1024`, `1792x1024`, `1024x1792` |
+| `openai_chat` fallback | Depends on upstream chat-compatible endpoint |
+
+The script only hard-validates the edit-size subset because that is the most common source of upstream 400 errors for `/images/edits`.
 
 ### Size Constraints
 
