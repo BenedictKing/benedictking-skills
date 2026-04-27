@@ -50,10 +50,12 @@ function hasFlag(name) {
 const VALUE_ARGS = new Set([
   '--base-url',
   '--extra-json',
+  '--format',
   '--image',
   '--input',
   '--mask',
   '--model',
+  '--n',
   '--output',
   '--prompt',
   '--protocol',
@@ -108,7 +110,7 @@ function endpointPath(protocol, operation) {
   return operation === 'edit' ? '/images/edits' : '/images/generations';
 }
 
-function buildRequestBody({ protocol, operation, model, prompt, size, quality, inputImages, mask, extraParams }) {
+function buildRequestBody({ protocol, operation, model, prompt, size, quality, n, format, inputImages, mask, extraParams }) {
   if (protocol === 'openai_chat') {
     if (mask) throw new Error('mask is not supported when using openai_chat protocol');
     const content = [{ type: 'text', text: prompt }];
@@ -119,7 +121,7 @@ function buildRequestBody({ protocol, operation, model, prompt, size, quality, i
       });
     }
 
-    return {
+    const chatBody = {
       model,
       messages: [
         {
@@ -129,6 +131,8 @@ function buildRequestBody({ protocol, operation, model, prompt, size, quality, i
       ],
       ...extraParams,
     };
+    if (n && n !== 1) chatBody.n = n;
+    return chatBody;
   }
 
   if (operation === 'edit') {
@@ -150,12 +154,15 @@ function buildRequestBody({ protocol, operation, model, prompt, size, quality, i
     }
     if (size) body.size = size;
     if (quality) body.quality = quality;
+    if (n && n !== 1) body.n = n;
+    if (format) body.format = format;
     return { ...body, ...extraParams };
   }
 
-  const body = { model, prompt };
+  const body = { model, prompt, n };
   if (size) body.size = size;
   if (quality) body.quality = quality;
+  if (format) body.format = format;
   return { ...body, ...extraParams };
 }
 
@@ -286,14 +293,24 @@ function extensionForMimeType(mimeType) {
 
 function printHelp() {
   console.log(`Usage:
-  node scripts/gpt-image-2-api.mjs --prompt "image prompt" [--output ./out] [--size 1024x1024] [--protocol openai_images|openai_chat]
+  node scripts/gpt-image-2-api.mjs --prompt "image prompt" [--output ./out] [--size 1024x1024] [--n 1] [--format png|jpeg|webp] [--quality low|medium|high|auto] [--protocol openai_images|openai_chat]
   node scripts/gpt-image-2-api.mjs --prompt "edit prompt" --image ./input.png [--image ./reference.png] [--mask ./mask.png] [--output ./out]
 
+Options:
+  --n <int>           Number of images (1-10), defaults to 1
+  --format <str>      Image format: png, jpeg, webp
+  --quality <str>     Image quality: low, medium, high, auto
+  --size <str>        Image size: 1024x1024, 1536x1024, 1024x1536, 2048x2048, 2048x1152, 3840x2160, 2160x3840, auto
+
 Environment:
-  OPENAI_API_KEY      API key for the OpenAI-compatible endpoint
-  OPENAI_BASE_URL     Base URL, for example http://127.0.0.1:3688/v1
-  OPENAI_IMAGE_MODEL  Image model, defaults to gpt-image-2
-  OPENAI_IMAGE_PROTOCOL  openai_images or openai_chat, defaults to openai_images
+  OPENAI_API_KEY        API key for the OpenAI-compatible endpoint
+  OPENAI_BASE_URL       Base URL, for example http://127.0.0.1:3688/v1
+  OPENAI_IMAGE_MODEL    Image model, defaults to gpt-image-2
+  OPENAI_IMAGE_PROTOCOL openai_images or openai_chat, defaults to openai_images
+  OPENAI_IMAGE_SIZE     Image size, defaults to 1024x1024
+  OPENAI_IMAGE_QUALITY  Optional image quality
+  OPENAI_IMAGE_N        Number of images (1-10), defaults to 1
+  OPENAI_IMAGE_FORMAT   Optional image format: png, jpeg, webp
   OPENAI_IMAGE_EXTRA_JSON  Optional JSON object merged into the request body
 `);
 }
@@ -313,6 +330,8 @@ async function main() {
   const prompt = readArg('--prompt', collectPositionalPrompt()).trim();
   const size = readArg('--size', process.env.OPENAI_IMAGE_SIZE || '1024x1024');
   const quality = readArg('--quality', process.env.OPENAI_IMAGE_QUALITY);
+  const n = parseInt(readArg('--n', process.env.OPENAI_IMAGE_N || '1'), 10);
+  const format = readArg('--format', process.env.OPENAI_IMAGE_FORMAT);
   const extraParams = parseJsonObject(readArg('--extra-json', process.env.OPENAI_IMAGE_EXTRA_JSON), 'OPENAI_IMAGE_EXTRA_JSON');
   const outputDir = path.resolve(readArg('--output', process.cwd()));
   const imagePaths = [...readArgs('--image'), ...readArgs('--input')];
@@ -325,7 +344,7 @@ async function main() {
   if (!prompt) throw new Error('Prompt is required. Use --prompt "..."');
   if (mask && operation !== 'edit') throw new Error('--mask requires at least one --image');
 
-  const body = buildRequestBody({ protocol, operation, model, prompt, size, quality, inputImages, mask, extraParams });
+  const body = buildRequestBody({ protocol, operation, model, prompt, size, quality, n, format, inputImages, mask, extraParams });
 
   const response = await fetch(`${baseUrl}${endpointPath(protocol, operation)}`, {
     method: 'POST',

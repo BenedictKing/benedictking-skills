@@ -5,7 +5,7 @@ license: MIT
 compatibility: Designed for Claude Code; requires Node.js and access to an OpenAI-compatible image API.
 metadata:
   author: BenedictKing
-  version: "1.1.0"
+  version: "1.1.1"
   user-invocable: "true"
 allowed-tools: Bash Read Write
 ---
@@ -23,6 +23,8 @@ Require `.env` values managed by `skill-master env set`:
 - `OPENAI_IMAGE_PROTOCOL`: `openai_images` or `openai_chat`, defaults to `openai_images`
 - `OPENAI_IMAGE_SIZE`: image size for `openai_images`, defaults to `1024x1024`
 - `OPENAI_IMAGE_QUALITY`: optional image quality for `openai_images`
+- `OPENAI_IMAGE_N`: number of images (1-10), defaults to `1`
+- `OPENAI_IMAGE_FORMAT`: optional image format (`png`, `jpeg`, `webp`)
 - `OPENAI_IMAGE_EXTRA_JSON`: optional JSON object merged into the request body
 
 ## Workflow
@@ -41,10 +43,10 @@ Require `.env` values managed by `skill-master env set`:
 ## Generate Image
 
 ```bash
-node scripts/gpt-image-2-api.mjs --prompt "a concise image prompt" --output ./generated-images --size 1024x1024
+node scripts/gpt-image-2-api.mjs --prompt "a concise image prompt" --output ./generated-images --size 1024x1024 --n 1
 ```
 
-Use `--base-url`, `--model`, `--protocol`, `--size`, `--quality`, and `--extra-json` only when the user or endpoint requires overrides.
+Use `--base-url`, `--model`, `--protocol`, `--size`, `--quality`, `--n`, `--format`, and `--extra-json` only when the user or endpoint requires overrides.
 
 ## Edit Image
 
@@ -63,3 +65,34 @@ node scripts/gpt-image-2-api.mjs --protocol openai_images --prompt "replace the 
 ```bash
 OPENAI_IMAGE_PROTOCOL=openai_chat node scripts/gpt-image-2-api.mjs --prompt "a concise image prompt" --output ./generated-images
 ```
+
+## Parameters
+
+| Parameter | Required | Type | Default | Description |
+|-----------|----------|------|---------|-------------|
+| `prompt` | yes | string | — | Text description, max 1000 characters |
+| `model` | yes | string | `gpt-image-2` | Model name |
+| `n` | yes | integer | `1` | Number of images, range 1–10 |
+| `size` | no | string | `1024x1024` | See [valid sizes](#valid-sizes) |
+| `quality` | no | string | `auto` | `low`, `medium`, `high`, `auto` |
+| `format` | no | string | — | `png`, `jpeg`, `webp` |
+
+### Valid Sizes
+
+| Size | Resolution |
+|------|------------|
+| `1024x1024` | Square (default) |
+| `1536x1024` | Landscape |
+| `1024x1536` | Portrait |
+| `2048x2048` | 2K Square |
+| `2048x1152` | 2K Landscape |
+| `3840x2160` | 4K Landscape |
+| `2160x3840` | 4K Portrait |
+| `auto` | Auto-determined |
+
+### Size Constraints
+
+1. Max side length ≤ 3840px
+2. Both sides must be multiples of 16px
+3. Aspect ratio ≤ 3:1 (long/short)
+4. Total pixels: min 655360, max 8294400
