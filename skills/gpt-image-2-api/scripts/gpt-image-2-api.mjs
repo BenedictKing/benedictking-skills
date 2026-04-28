@@ -4,8 +4,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-const skillRoot = path.resolve(scriptDir, '..');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 function parseEnv(content) {
   const data = {};
@@ -28,7 +28,7 @@ let cachedSkillEnv;
 
 async function readSkillEnv() {
   if (cachedSkillEnv) return cachedSkillEnv;
-  const envPath = path.join(skillRoot, '.env');
+  const envPath = path.join(__dirname, '..', '.env');
   if (!existsSync(envPath)) {
     cachedSkillEnv = {};
     return cachedSkillEnv;
