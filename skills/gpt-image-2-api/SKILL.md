@@ -14,8 +14,16 @@ allowed-tools: Bash Read Write
 ## Purpose
 Generate and edit images with gpt-image-2 through a third-party OpenAI-compatible API using .env-configured OPENAI_API_KEY and OPENAI_BASE_URL values. Use when the user asks to create images, edit reference images, create visual assets, illustrations, or image variations with a configurable API endpoint.
 
+## Environment Variables & API Key
+
+Two ways to configure API settings (priority: environment variable > `.env`):
+
+1. Environment variables: `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and optional `OPENAI_IMAGE_*` overrides
+2. `.env` file: Place in `.env`, can copy from `.env.example`
+
+You can manage the `.env` file manually or through `skill-master env set`.
+
 ## Configuration
-Require `.env` values managed by `skill-master env set`:
 
 - `OPENAI_API_KEY`: API key for the third-party endpoint
 - `OPENAI_BASE_URL`: OpenAI-compatible base URL, for example `http://127.0.0.1:3688/v1`
@@ -29,6 +37,12 @@ Require `.env` values managed by `skill-master env set`:
 - `OPENAI_IMAGE_RESPONSE_FORMAT`: optional response format (`url`, `b64_json`)
 - `OPENAI_IMAGE_BACKGROUND`: optional background (`transparent`, `opaque`, `auto`)
 - `OPENAI_IMAGE_MODERATION`: optional moderation level (`low`, `auto`)
+- `OPENAI_IMAGE_OUTPUT_COMPRESSION`: optional compression level `0`–`100` for `jpeg` / `webp`
+- `OPENAI_IMAGE_PARTIAL_IMAGES`: optional streaming partial image count `0`–`3`
+- `OPENAI_IMAGE_INPUT_FIDELITY`: optional edit fidelity (`high`, `low`)
+- `OPENAI_IMAGE_STYLE`: optional generation style for `dall-e-3` (`vivid`, `natural`)
+- `OPENAI_IMAGE_STREAM`: optional `openai_images` SSE toggle (`true`, `false`)
+- `OPENAI_IMAGE_USER`: optional end-user identifier
 - `OPENAI_IMAGE_EXTRA_JSON`: optional JSON object merged into the request body
 
 ## Workflow

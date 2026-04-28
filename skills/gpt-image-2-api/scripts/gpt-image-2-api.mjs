@@ -24,13 +24,21 @@ function parseEnv(content) {
   return data;
 }
 
-async function loadSkillEnv() {
+let cachedSkillEnv;
+
+async function readSkillEnv() {
+  if (cachedSkillEnv) return cachedSkillEnv;
   const envPath = path.join(skillRoot, '.env');
-  if (!existsSync(envPath)) return;
-  const values = parseEnv(await readFile(envPath, 'utf-8'));
-  for (const [key, value] of Object.entries(values)) {
-    if (!process.env[key]) process.env[key] = value;
+  if (!existsSync(envPath)) {
+    cachedSkillEnv = {};
+    return cachedSkillEnv;
   }
+  cachedSkillEnv = parseEnv(await readFile(envPath, 'utf-8'));
+  return cachedSkillEnv;
+}
+
+function readEnvValue(skillEnv, key) {
+  return process.env[key] || skillEnv[key];
 }
 
 function readArg(name, fallback) {
@@ -474,10 +482,17 @@ Environment:
   OPENAI_IMAGE_SIZE           Image size, defaults to 1024x1024
   OPENAI_IMAGE_QUALITY        Optional image quality
   OPENAI_IMAGE_N              Number of images (1-10), defaults to 1
+  OPENAI_IMAGE_OUTPUT_FORMAT  Optional output format: png, jpeg, webp
   OPENAI_IMAGE_FORMAT         Legacy output format alias: png, jpeg, webp
   OPENAI_IMAGE_RESPONSE_FORMAT Optional response format: url, b64_json
   OPENAI_IMAGE_BACKGROUND     Optional background: transparent, opaque, auto
   OPENAI_IMAGE_MODERATION     Optional moderation: low, auto
+  OPENAI_IMAGE_OUTPUT_COMPRESSION Optional compression 0-100 for jpeg/webp
+  OPENAI_IMAGE_PARTIAL_IMAGES Optional streaming partial image count: 0-3
+  OPENAI_IMAGE_INPUT_FIDELITY Optional edit fidelity: high, low
+  OPENAI_IMAGE_STYLE          Optional generation style for dall-e-3: vivid, natural
+  OPENAI_IMAGE_STREAM         Optional openai_images SSE toggle: true, false
+  OPENAI_IMAGE_USER           Optional end-user identifier
   OPENAI_IMAGE_EXTRA_JSON     Optional JSON object merged into the request body
 `);
 }
@@ -488,29 +503,29 @@ async function main() {
     return;
   }
 
-  await loadSkillEnv();
+  const skillEnv = await readSkillEnv();
 
-  const apiKey = process.env.OPENAI_API_KEY;
-  const baseUrl = readArg('--base-url', process.env.OPENAI_BASE_URL || 'http://127.0.0.1:3688/v1').replace(/\/+$/, '');
-  const model = readArg('--model', process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2');
-  const protocol = normalizeProtocol(readArg('--protocol', process.env.OPENAI_IMAGE_PROTOCOL || 'openai_images'));
+  const apiKey = readEnvValue(skillEnv, 'OPENAI_API_KEY');
+  const baseUrl = readArg('--base-url', readEnvValue(skillEnv, 'OPENAI_BASE_URL') || 'http://127.0.0.1:3688/v1').replace(/\/+$/, '');
+  const model = readArg('--model', readEnvValue(skillEnv, 'OPENAI_IMAGE_MODEL') || 'gpt-image-2');
+  const protocol = normalizeProtocol(readArg('--protocol', readEnvValue(skillEnv, 'OPENAI_IMAGE_PROTOCOL') || 'openai_images'));
   const prompt = readArg('--prompt', collectPositionalPrompt()).trim();
-  const size = readArg('--size', process.env.OPENAI_IMAGE_SIZE || '1024x1024');
-  const quality = readArg('--quality', process.env.OPENAI_IMAGE_QUALITY);
-  const n = parseInt(readArg('--n', process.env.OPENAI_IMAGE_N || '1'), 10);
-  const legacyFormat = readArg('--format', process.env.OPENAI_IMAGE_FORMAT);
-  const responseFormat = readArg('--response-format', process.env.OPENAI_IMAGE_RESPONSE_FORMAT);
-  const outputFormat = readArg('--output-format', process.env.OPENAI_IMAGE_OUTPUT_FORMAT || legacyFormat);
-  const background = readArg('--background', process.env.OPENAI_IMAGE_BACKGROUND);
-  const moderation = readArg('--moderation', process.env.OPENAI_IMAGE_MODERATION);
-  const outputCompression = parseOptionalInt(readArg('--output-compression', process.env.OPENAI_IMAGE_OUTPUT_COMPRESSION), '--output-compression');
-  const partialImages = parseOptionalInt(readArg('--partial-images', process.env.OPENAI_IMAGE_PARTIAL_IMAGES), '--partial-images');
-  const inputFidelity = readArg('--input-fidelity', process.env.OPENAI_IMAGE_INPUT_FIDELITY);
-  const style = readArg('--style', process.env.OPENAI_IMAGE_STYLE);
-  const streamValue = readArg('--stream', process.env.OPENAI_IMAGE_STREAM);
+  const size = readArg('--size', readEnvValue(skillEnv, 'OPENAI_IMAGE_SIZE') || '1024x1024');
+  const quality = readArg('--quality', readEnvValue(skillEnv, 'OPENAI_IMAGE_QUALITY'));
+  const n = parseInt(readArg('--n', readEnvValue(skillEnv, 'OPENAI_IMAGE_N') || '1'), 10);
+  const legacyFormat = readArg('--format', readEnvValue(skillEnv, 'OPENAI_IMAGE_FORMAT'));
+  const responseFormat = readArg('--response-format', readEnvValue(skillEnv, 'OPENAI_IMAGE_RESPONSE_FORMAT'));
+  const outputFormat = readArg('--output-format', readEnvValue(skillEnv, 'OPENAI_IMAGE_OUTPUT_FORMAT') || legacyFormat);
+  const background = readArg('--background', readEnvValue(skillEnv, 'OPENAI_IMAGE_BACKGROUND'));
+  const moderation = readArg('--moderation', readEnvValue(skillEnv, 'OPENAI_IMAGE_MODERATION'));
+  const outputCompression = parseOptionalInt(readArg('--output-compression', readEnvValue(skillEnv, 'OPENAI_IMAGE_OUTPUT_COMPRESSION')), '--output-compression');
+  const partialImages = parseOptionalInt(readArg('--partial-images', readEnvValue(skillEnv, 'OPENAI_IMAGE_PARTIAL_IMAGES')), '--partial-images');
+  const inputFidelity = readArg('--input-fidelity', readEnvValue(skillEnv, 'OPENAI_IMAGE_INPUT_FIDELITY'));
+  const style = readArg('--style', readEnvValue(skillEnv, 'OPENAI_IMAGE_STYLE'));
+  const streamValue = readArg('--stream', readEnvValue(skillEnv, 'OPENAI_IMAGE_STREAM'));
   const stream = streamValue === undefined ? undefined : streamValue === 'true';
-  const user = readArg('--user', process.env.OPENAI_IMAGE_USER);
-  const cliExtraParams = parseJsonObject(readArg('--extra-json', process.env.OPENAI_IMAGE_EXTRA_JSON), 'OPENAI_IMAGE_EXTRA_JSON');
+  const user = readArg('--user', readEnvValue(skillEnv, 'OPENAI_IMAGE_USER'));
+  const cliExtraParams = parseJsonObject(readArg('--extra-json', readEnvValue(skillEnv, 'OPENAI_IMAGE_EXTRA_JSON')), 'OPENAI_IMAGE_EXTRA_JSON');
   const outputDir = path.resolve(readArg('--output', process.cwd()));
   const imagePaths = [...readArgs('--image'), ...readArgs('--input')];
   const inputImages = await Promise.all(imagePaths.map(readImageInput));
