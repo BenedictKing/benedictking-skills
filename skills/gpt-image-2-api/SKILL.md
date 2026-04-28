@@ -5,7 +5,7 @@ license: MIT
 compatibility: Designed for Claude Code; requires Node.js and access to an OpenAI-compatible image API.
 metadata:
   author: BenedictKing
-  version: "1.2.1"
+  version: "1.3.0"
   user-invocable: "true"
 allowed-tools: Bash Read Write
 ---
@@ -86,7 +86,7 @@ OPENAI_IMAGE_PROTOCOL=openai_chat node scripts/gpt-image-2-api.mjs --prompt "a c
 | `prompt` | yes | string | — | Text description for generation or edit |
 | `model` | no | string | `gpt-image-2` | Image model name |
 | `n` | no | integer | `1` | Number of images, range 1–10 |
-| `size` | no | string | `1024x1024` | Output size; edits support `auto`, `1024x1024`, `1536x1024`, `1024x1536` |
+| `size` | no | string | `1024x1024` | Output size passed through to the upstream endpoint |
 | `quality` | no | string | endpoint default | `low`, `medium`, `high`, `auto` |
 | `output-format` | no | string | endpoint default | `png`, `jpeg`, `webp` |
 | `response-format` | no | string | endpoint default | `url`, `b64_json`; mainly for DALL·E-compatible responses |
@@ -99,17 +99,18 @@ OPENAI_IMAGE_PROTOCOL=openai_chat node scripts/gpt-image-2-api.mjs --prompt "a c
 | `user` | no | string | — | End-user identifier |
 | `format` | no | string | — | Legacy alias for `output-format` |
 
-### Valid Sizes
+### Size Behavior
 
-| Endpoint / Model Family | Valid Sizes |
-|-------------------------|-------------|
-| GPT image generations | `auto`, `1024x1024`, `1536x1024`, `1024x1536` |
-| GPT image edits | `auto`, `1024x1024`, `1536x1024`, `1024x1536` |
-| `dall-e-2` generations | `256x256`, `512x512`, `1024x1024` |
-| `dall-e-3` generations | `1024x1024`, `1792x1024`, `1024x1792` |
-| `openai_chat` fallback | Depends on upstream chat-compatible endpoint |
+The script does not hard-validate `size`; values are passed through so OpenAI-compatible upstream endpoints can decide what they support.
 
-The script only hard-validates the edit-size subset because that is the most common source of upstream 400 errors for `/images/edits`.
+For the Yunwu-compatible docs currently checked in this project:
+- `/images/generations` documents `auto`, `1024x1024`, `1536x1024`, `1024x1536`, `2048x2048`, `2048x1152`, `3840x2160`, and `2160x3840`
+- `/images/edits` currently documents the classic GPT image set: `auto`, `1024x1024`, `1536x1024`, `1024x1536`
+- `dall-e-2` documents `256x256`, `512x512`, `1024x1024`
+- `dall-e-3` documents `1024x1024`, `1792x1024`, `1024x1792`
+- Chat-compatible fallbacks remain endpoint-specific
+
+Because provider behavior may differ by endpoint and documentation may lag behind the implementation, this skill forwards `size` unchanged and lets the upstream API accept or reject it.
 
 ### Size Constraints
 

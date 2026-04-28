@@ -375,9 +375,6 @@ function validateArgs({ protocol, operation, n, responseFormat, outputFormat, ba
     if (stream !== undefined) throw new Error('--stream is not supported with openai_chat');
     if (hasMask) throw new Error('--mask is not supported with openai_chat');
   }
-  if (operation === 'edit' && size && !['auto', '1024x1024', '1536x1024', '1024x1536'].includes(size)) {
-    throw new Error('image edits only support --size auto, 1024x1024, 1536x1024, or 1024x1536');
-  }
 }
 
 function mergeExtraParams(baseParams, cliExtraParams) {
@@ -456,7 +453,7 @@ function printHelp() {
 
 Options:
   --n <int>                   Number of images (1-10), defaults to 1
-  --size <str>                Image size; edits support auto, 1024x1024, 1536x1024, 1024x1536
+  --size <str>                Image size passed through to the upstream endpoint
   --quality <str>             Image quality: low, medium, high, auto
   --response-format <str>     Response format: url, b64_json
   --output-format <str>       Output format: png, jpeg, webp
