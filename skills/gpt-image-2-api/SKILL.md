@@ -46,8 +46,8 @@ You can manage the `.env` file manually or through `skill-master env set`.
 - `OPENAI_IMAGE_EXTRA_JSON`: optional JSON object merged into the request body
 
 ## Workflow
-1. Confirm `.env` is configured before making API calls.
-2. Use `scripts/gpt-image-2-api.mjs` for text-to-image and image-edit requests.
+1. Use `scripts/gpt-image-2-api.mjs` for text-to-image and image-edit requests.
+2. If required `OPENAI_*` settings are not available from the current environment or this skill's `.env`, stop and tell the user which variables need to be configured.
 3. `openai_images` generation uses `/images/generations` with JSON; `openai_images` editing uses `/images/edits` with `multipart/form-data`.
 4. Use `OPENAI_IMAGE_PROTOCOL=openai_chat` only when the endpoint lacks `/images/*` support; it does not support `--mask`, `--background`, `--output-format`, or streaming image events.
 5. Add one or more `--image <path>` arguments to edit/reference an input image.
