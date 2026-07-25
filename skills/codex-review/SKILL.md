@@ -5,7 +5,7 @@ license: MIT
 compatibility: Designed for Claude Code; requires git and codex CLI; may also need project-specific lint or format tools available in PATH.
 metadata:
   author: BenedictKing
-  version: "2.1.14"
+  version: "2.2.0"
   user-invocable: "true"
 allowed-tools: Bash Read Glob Write Edit
 ---
@@ -139,31 +139,38 @@ git show --stat --format= HEAD | tail -1
 
 **Model + Reasoning Effort Combinations:**
 
-Always use `model_reasoning_effort=ultra`. Choose the model and timeout based on task complexity.
+选型由 `scripts/select-review-model.mjs` 根据实时 codexradar 智商/成本数据驱动决定：
+1. 先判定难度等级（Normal / Difficult / Critical）
+2. 调用脚本获取该难度下的推荐 model + effort
+3. 脚本策略：选智商领头羊模型（当前通常是 `gpt-5.6-sol`），在其成本曲线上按难度滑动
+   - **普通** = IQ ≥ 阈值的最便宜 effort（靠左）
+   - **困难** = IQ ≥ 更高阈值的 effort（更靠右）
+   - **关键** = 全局最高 IQ effort（最靠右）
 
-| Combination | Timeout | Recommended For |
-|-------------|---------|-----------------|
-| `model=gpt-5.6-terra model_reasoning_effort=ultra` | 10 min | Normal tasks (default) |
-| `model=gpt-5.6-sol model_reasoning_effort=ultra` | 15-40 min | Difficult tasks, critical code, architecture changes |
-| `model=gpt-5.5 model_reasoning_effort=high` | 10 min | Normal-task fallback after both 5.6 models are unavailable |
-| `model=gpt-5.5 model_reasoning_effort=xhigh` | 15-40 min | Difficult or critical fallback after both 5.6 models are unavailable |
+脚本内置 1 小时 TTL 缓存（`~/.cache/codex-review/radar.json`），失败时回退到保守默认值：
+
+| Difficulty | Built-in Default | Timeout |
+|------------|------------------|---------|
+| Normal | `model=gpt-5.6-terra effort=high` | 10 min |
+| Difficult | `model=gpt-5.6-sol effort=high` | 15 min |
+| Critical | `model=gpt-5.6-sol effort=max` | 40 min |
 
 **Model Fallback Policy:**
 
 - Determine availability from the actual `codex review` result. Do not use `codex debug models` as a preflight gate.
 - Treat only explicit model or reasoning-effort availability failures as a fallback trigger, such as a model not found, unavailable model access, or an unsupported reasoning effort.
 - Do not fall back for review findings, lint failures, authentication or network failures, timeouts, or a model-metadata warning when the review has started.
-- For normal tasks, use this order: `gpt-5.6-terra + ultra` → `gpt-5.6-sol + ultra` → `gpt-5.5 + high`.
-- For difficult and critical tasks, use this order: `gpt-5.6-sol + ultra` → `gpt-5.6-terra + ultra` → `gpt-5.5 + xhigh`.
-- Run lint only once. On an availability failure, retry only `codex review` with the same review mode and the next candidate. Stop after the `gpt-5.5` attempt and report the error if it also fails.
+- **Dynamic fallback chain**: use the `fallback` array returned by `select-review-model.mjs`, ordered by descending best-effort IQ. Retry each candidate in order after an explicit availability failure.
+- If the script itself fails or returns no fallback, use the built-in defaults as the final fallback.
+- Run lint only once. On an availability failure, retry only `codex review` with the next candidate. Stop after exhausting the fallback chain and report the error.
 
-**Critical Tasks** (meets any condition, use `gpt-5.6-sol`):
+**Critical Tasks** (meets any condition, use data-driven selection):
 
 - Modified files ≥ 30
 - Total code changes (insertions + deletions) ≥ 2000 lines
 - Involves core architecture/algorithm changes (user explicitly mentioned)
-- Config: `--config model=gpt-5.6-sol --config model_reasoning_effort=ultra`, timeout 40 minutes
-- Fallback after both 5.6 candidates are unavailable: `--config model=gpt-5.5 --config model_reasoning_effort=xhigh`
+- **Config**: Run `node <skill-dir>/scripts/select-review-model.mjs --difficulty critical` to get primary model/effort, timeout 40 minutes
+- If the script is unavailable, fallback to built-in default: `model=gpt-5.6-sol effort=max`
 
 **Difficult Tasks** (meets any condition):
 
@@ -171,13 +178,13 @@ Always use `model_reasoning_effort=ultra`. Choose the model and timeout based on
 - Total code changes (insertions + deletions) ≥ 500 lines
 - Single metric: insertions ≥ 300 lines OR deletions ≥ 300 lines
 - Cross-module refactoring
-- Default config: `--config model=gpt-5.6-sol --config model_reasoning_effort=ultra`, timeout 15 minutes
-- Fallback after both 5.6 candidates are unavailable: `--config model=gpt-5.5 --config model_reasoning_effort=xhigh`
+- **Config**: Run `node <skill-dir>/scripts/select-review-model.mjs --difficulty difficult` to get primary model/effort, timeout 15 minutes
+- If the script is unavailable, fallback to built-in default: `model=gpt-5.6-sol effort=high`
 
 **Normal Tasks** (other cases):
 
-- Default config: `--config model=gpt-5.6-terra --config model_reasoning_effort=ultra`, timeout 10 minutes
-- Fallback after both 5.6 candidates are unavailable: `--config model=gpt-5.5 --config model_reasoning_effort=high`
+- **Config**: Run `node <skill-dir>/scripts/select-review-model.mjs --difficulty normal` to get primary model/effort, timeout 10 minutes
+- If the script is unavailable, fallback to built-in default: `model=gpt-5.6-terra effort=high`
 
 **Evaluation Method:**
 
@@ -210,18 +217,32 @@ git diff --stat HEAD | tail -1
 - Pure rename: May show `"0 insertions(+), 0 deletions(-)"` or omit both
 
 **Decision Logic (check in order, first match wins):**
-- IF file_count >= 30 OR total_changes >= 2000 → **Critical** (gpt-5.6-sol + ultra)
-- IF file_count >= 10 → **Difficult** (gpt-5.6-sol + ultra)
-- IF total_changes >= 500 → **Difficult** (gpt-5.6-sol + ultra)
-- IF insertions >= 300 OR deletions >= 300 → **Difficult** (gpt-5.6-sol + ultra)
-- ELSE → **Normal** (gpt-5.6-terra + ultra)
+- IF file_count >= 30 OR total_changes >= 2000 → **Critical** (run script `--difficulty critical`)
+- IF file_count >= 10 → **Difficult** (run script `--difficulty difficult`)
+- IF total_changes >= 500 → **Difficult** (run script `--difficulty difficult`)
+- IF insertions >= 300 OR deletions >= 300 → **Difficult** (run script `--difficulty difficult`)
+- ELSE → **Normal** (run script `--difficulty normal`)
 
 **Example Cases:**
-- ⭐ "50 files changed, 2000 insertions(+), 1500 deletions(-)" → **Critical task**, use `model=gpt-5.6-sol model_reasoning_effort=ultra`, timeout 40 minutes (core architecture change)
-- ✅ "20 files changed, 342 insertions(+), 985 deletions(-)" → **Difficult task**, use `model=gpt-5.6-sol model_reasoning_effort=ultra`, timeout 15 minutes
-- ✅ "5 files changed, 600 insertions(+), 50 deletions(-)" → **Difficult task**, use `model=gpt-5.6-sol model_reasoning_effort=ultra`, timeout 15 minutes
-- ❌ "3 files changed, 150 insertions(+), 80 deletions(-)" → **Normal task**, use `model=gpt-5.6-terra model_reasoning_effort=ultra`, timeout 10 minutes
-- ❌ "1 file changed, 50 insertions(+)" → **Normal task**, use `model=gpt-5.6-terra model_reasoning_effort=ultra`, timeout 10 minutes
+- ⭐ "50 files changed, 2000 insertions(+), 1500 deletions(-)" → **Critical task**, run script `--difficulty critical` → likely `model=gpt-5.6-sol effort=max`, timeout 40 minutes
+- ✅ "20 files changed, 342 insertions(+), 985 deletions(-)" → **Difficult task**, run script `--difficulty difficult` → likely `model=gpt-5.6-sol effort=high`, timeout 15 minutes
+- ✅ "5 files changed, 600 insertions(+), 50 deletions(-)" → **Difficult task**, run script `--difficulty difficult` → likely `model=gpt-5.6-sol effort=high`, timeout 15 minutes
+- ❌ "3 files changed, 150 insertions(+), 80 deletions(-)" → **Normal task**, run script `--difficulty normal` → likely `model=gpt-5.6-sol effort=medium`, timeout 10 minutes
+- ❌ "1 file changed, 50 insertions(+)" → **Normal task**, run script `--difficulty normal` → likely `model=gpt-5.6-sol effort=medium`, timeout 10 minutes
+
+**Dynamic Model Selection Flow:**
+
+After determining the difficulty level, obtain the recommended model and effort dynamically:
+
+```bash
+# Resolve the skill directory path (adjust if your skill installation path differs)
+SKILL_DIR="$(cd "$(dirname "$0")" && pwd)/scripts" 2>/dev/null || SKILL_DIR="$HOME/.claude/skills/codex-review/scripts"
+MODEL_JSON=$(node "$SKILL_DIR/select-review-model.mjs" --difficulty <normal|difficult|critical>)
+PRIMARY_MODEL=$(echo "$MODEL_JSON" | jq -r '.primary.model')
+PRIMARY_EFFORT=$(echo "$MODEL_JSON" | jq -r '.primary.effort')
+```
+
+Use the extracted `PRIMARY_MODEL` and `PRIMARY_EFFORT` to build the review command.
 
 **Invoke codex-runner Subtask:**
 
@@ -235,9 +256,9 @@ Task parameters:
 - prompt: Choose corresponding command based on project type and difficulty
 
 Build the prompt as:
-  <lint command> && codex review <mode> --config model=<primary-model> --config model_reasoning_effort=ultra
+  <lint command> && codex review <mode> --config model=<primary-model> --config model_reasoning_effort=<primary-effort>
 
-After lint succeeds, apply the fallback policy above. Retry only `codex review <mode>` with the next candidate after an explicit model or reasoning-effort availability failure.
+After lint succeeds, apply the dynamic fallback policy. Retry only `codex review <mode>` with the next candidate from the fallback array after an explicit model or reasoning-effort availability failure.
 
 Lint command (by project type):
   Go:     go fmt ./... && go vet ./...
@@ -245,18 +266,16 @@ Lint command (by project type):
   Python: black . && ruff check --fix .
 
 Model + timeout (by difficulty):
-  Critical:  model=gpt-5.6-sol,   model_reasoning_effort=ultra, timeout 2400000 (40 min)
-  Difficult: model=gpt-5.6-sol,   model_reasoning_effort=ultra, timeout 900000  (15 min)
-  Normal:    model=gpt-5.6-terra, model_reasoning_effort=ultra, timeout 600000  (10 min)
-  Normal fallback:              model=gpt-5.5, model_reasoning_effort=high
-  Difficult / Critical fallback: model=gpt-5.5, model_reasoning_effort=xhigh
+  Critical:  run script --difficulty critical  → use returned primary, timeout 2400000 (40 min)
+  Difficult: run script --difficulty difficult  → use returned primary, timeout 900000  (15 min)
+  Normal:    run script --difficulty normal     → use returned primary, timeout 600000  (10 min)
 
-Example (Go, Normal):
-  go fmt ./... && go vet ./... && codex review --uncommitted --config model=gpt-5.6-terra --config model_reasoning_effort=ultra
+Example (Go, Normal, after script returns sol+medium):
+  go fmt ./... && go vet ./... && codex review --uncommitted --config model=gpt-5.6-sol --config model_reasoning_effort=medium
 
 Clean working directory (review last commit, no lint):
-  codex review --commit HEAD --config model=<model> --config model_reasoning_effort=ultra
-  (select gpt-5.6-terra for normal changes, gpt-5.6-sol for difficult or critical changes)
+  codex review --commit HEAD --config model=<primary-model> --config model_reasoning_effort=<primary-effort>
+  (model/effort obtained from select-review-model.mjs)
 ```
 
 ### 4. Self-Correction and Severity-Driven Fixes
@@ -359,8 +378,8 @@ codex review --base develop
 # 6. Review with title (title shown in review summary)
 codex review --uncommitted --title "fix: resolve JSON parsing errors"
 
-# 7. Review using the normal-task model
-codex review --uncommitted -c model="gpt-5.6-terra" -c model_reasoning_effort="ultra"
+# 7. Review using dynamically selected model and effort (as determined by select-review-model.mjs)
+codex review --uncommitted -c model="<primary-model>" -c model_reasoning_effort="<primary-effort>"
 ```
 
 ### Important Limitations

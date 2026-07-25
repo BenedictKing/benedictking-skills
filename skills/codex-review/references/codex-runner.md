@@ -22,8 +22,9 @@ Receives complete command chain through Task tool's prompt parameter:
 
 1. **Lint command**: Auto-selected based on project type (go fmt, npm run lint:fix, black, etc.)
 2. **Review mode**: `--uncommitted` or `--commit HEAD` or `--base <branch>`
-3. **Model config**: Ordered candidates determined by task difficulty
-4. **Timeout**: Controlled through Task tool's timeout parameter (typically 10 min normal, 15 min difficult, 40 min critical)
+3. **Model config**: `model` and `model_reasoning_effort` dynamically determined by the main skill via `select-review-model.mjs`
+4. **Fallback chain**: Ordered array of `{model, effort}` candidates returned by the script; retry each on explicit availability failure
+5. **Timeout**: Controlled through Task tool's timeout parameter (typically 10 min normal, 15 min difficult, 40 min critical)
 
 ## Command Examples
 
@@ -35,21 +36,23 @@ Receives complete command chain through Task tool's prompt parameter:
 #   Node:   npm run lint:fix
 #   Python: black . && ruff check --fix .
 #
-# Model by difficulty:
-#   Normal              -> gpt-5.6-terra + ultra
-#   Difficult / Critical -> gpt-5.6-sol + ultra
+# Model and effort are dynamically selected by the main skill; examples below show typical outputs:
+#   Normal              -> gpt-5.6-sol + medium  (cost-effective, IQ threshold 0.55)
+#   Difficult           -> gpt-5.6-sol + high    (higher IQ, threshold 0.65)
+#   Critical            -> gpt-5.6-sol + max     (highest IQ available)
 #
 # Fallback order after an explicit model or reasoning-effort availability failure:
-#   Normal              -> gpt-5.6-terra + ultra -> gpt-5.6-sol + ultra -> gpt-5.5 + high
-#   Difficult / Critical -> gpt-5.6-sol + ultra -> gpt-5.6-terra + ultra -> gpt-5.5 + xhigh
+#   Use the fallback array provided in the Task prompt, ordered by descending best-effort IQ.
+#   Example fallback chain for normal difficulty:
+#     gpt-5.6-terra + xhigh -> gpt-5.5 + xhigh -> gpt-5.6-luna + max
 
-# Example: Go project, Normal task
-go fmt ./... && go vet ./... && codex review --uncommitted --config model=gpt-5.6-terra --config model_reasoning_effort=ultra
+# Example: Go project, Normal task (dynamic selection returned sol+medium)
+go fmt ./... && go vet ./... && codex review --uncommitted --config model=gpt-5.6-sol --config model_reasoning_effort=medium
 
-# Review mode varies by working directory state. Use Terra for normal work and replace it with Sol for difficult or critical work:
-codex review --uncommitted --config model=gpt-5.6-terra --config model_reasoning_effort=ultra   # normal uncommitted changes
-codex review --commit HEAD --config model=gpt-5.6-terra --config model_reasoning_effort=ultra   # normal clean dir, last commit
-codex review --base main   --config model=gpt-5.6-terra --config model_reasoning_effort=ultra   # normal branch review
+# Review mode varies by working directory state. The model/effort come from select-review-model.mjs:
+codex review --uncommitted --config model=<model> --config model_reasoning_effort=<effort>   # normal uncommitted changes
+codex review --commit HEAD --config model=<model> --config model_reasoning_effort=<effort>   # normal clean dir, last commit
+codex review --base main   --config model=<model> --config model_reasoning_effort=<effort>   # normal branch review
 ```
 
 ## Execution Flow
