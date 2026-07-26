@@ -5,7 +5,7 @@ license: MIT
 compatibility: Designed for Claude Code; requires git and codex CLI; may also need project-specific lint or format tools available in PATH.
 metadata:
   author: BenedictKing
-  version: "2.2.0"
+  version: "2.3.0"
   user-invocable: "true"
 allowed-tools: Bash Read Glob Write Edit
 ---
@@ -258,6 +258,10 @@ Task parameters:
 Build the prompt as:
   <lint command> && codex review <mode> --config model=<primary-model> --config model_reasoning_effort=<primary-effort>
 
+Pass exactly these flags and nothing else. Do not add --full-auto, -s/--sandbox, or any
+--dangerously-* flag: `codex review` does not accept them (see "CLI Compatibility and Flag
+Discipline"), and adding one is an unrequested safety-gate bypass.
+
 After lint succeeds, apply the dynamic fallback policy. Retry only `codex review <mode>` with the next candidate from the fallback array after an explicit model or reasoning-effort availability failure.
 
 Lint command (by project type):
@@ -388,9 +392,38 @@ codex review --uncommitted -c model="<primary-model>" -c model_reasoning_effort=
 - `[PROMPT]` parameter is mutually exclusive with the above three options
 - Must be executed in a git repository directory
 
+### CLI Compatibility and Flag Discipline
+
+**Check the CLI version first when a flag is rejected:**
+
+```bash
+codex --version   # e.g. codex-cli 0.145.0
+codex review -h   # authoritative list of accepted flags for THIS version
+```
+
+`codex review` accepts only these options (verified on codex-cli 0.145.0):
+
+`-c/--config`, `--strict-config`, `--enable`, `--disable`, `--uncommitted`, `--base`, `--commit`, `--title`, `-h/--help`
+
+**Never add approval or sandbox flags to `codex review`.** The following belong to `codex exec`, not `codex review`, and passing them makes the command fail with `error: unexpected argument`:
+
+- `--full-auto`
+- `-s` / `--sandbox <read-only|workspace-write|danger-full-access>`
+- `--dangerously-bypass-approvals-and-sandbox`
+- `--dangerously-bypass-hook-trust`
+
+`codex review` is already non-interactive and read-only; it needs no approval bypass. Beyond breaking the command, adding such a flag is an unrequested safety-gate bypass that a host permission layer (for example the Claude Code auto mode classifier) will deny.
+
+**Rules when a codex invocation fails:**
+
+1. `error: unexpected argument '--x'` → the flag does not exist on this subcommand. Run `codex review -h`, remove the flag, retry. Do not substitute a different bypass flag.
+2. A denied command is a decision, not a transient error. Do not re-run it verbatim and do not reach for a stronger flag to get past it. Report the blocker instead.
+3. Only ever add flags from the verified list above. Model and effort go through `-c/--config`, never through invented CLI flags.
+
 ## Important Notes
 
 - Ensure execution in git repository directory
+- **Verify CLI surface before improvising flags**: run `codex --version` and `codex review -h`. Only the flags that `-h` lists are valid on this version. Never add `--full-auto`, `-s/--sandbox`, or `--dangerously-*` to `codex review`.
 - **Timeout automatically adjusted based on task difficulty:**
   - Critical tasks: 40 minutes (`timeout: 2400000`)
   - Difficult tasks: 15 minutes (`timeout: 900000`)

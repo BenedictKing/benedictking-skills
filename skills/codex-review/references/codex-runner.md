@@ -1,6 +1,6 @@
 ---
 name: codex-runner
-version: 1.0.6
+version: 1.1.0
 author: BenedictKing
 description: Independent subtask for executing Lint and codex review with difficulty-based model selection and fallback (internal use)
 allowed-tools:
@@ -60,6 +60,19 @@ codex review --base main   --config model=<model> --config model_reasoning_effor
 1. **Lint First**: Execute static analysis tools to fix formatting issues first
 2. **Codex Review**: Execute the primary model only after lint succeeds
 3. **Fallback**: On an explicit model or reasoning-effort availability failure, retry only the review command with the next candidate; do not rerun lint
+
+## Flag Discipline
+
+Run the command exactly as given in the prompt. `codex review` accepts only `-c/--config`,
+`--strict-config`, `--enable`, `--disable`, `--uncommitted`, `--base`, `--commit`, and `--title`.
+
+Never add `--full-auto`, `-s`/`--sandbox`, `--dangerously-bypass-approvals-and-sandbox`, or
+`--dangerously-bypass-hook-trust`. Those belong to `codex exec`; on `codex review` they fail with
+`error: unexpected argument`, and adding one is an unrequested approval/sandbox bypass that a host
+permission layer will deny.
+
+If a flag is rejected, run `codex review -h` to see what this codex version accepts, drop the
+unsupported flag, and retry. Do not swap in a different bypass flag.
 
 ## Output Format
 
