@@ -5,6 +5,18 @@
  * 从 codexradar (dradar) 获取模型智商/成本数据，
  * 为 codex-review skill 提供数据驱动的 model + effort 选型建议。
  *
+ * 指标与 codexradar 站点图表（综合成本 × 智力）保持同一量纲：
+ *   iq       = p / n * 150                                   （0-150 刻度）
+ *   price    = mean(actual_cost_usd)                          （美元）
+ *   minutes  = mean(duration_sec) / 60                         （分钟）
+ *   combined = price * (minutes / 10) ^ (ln2.5 / ln1.35) * 100  （时间加权综合成本）
+ *   costIndex = combined / max(combined) * 100                 （归一化，最高 = 100）
+ *
+ * 选型在**全部 model × effort 组合**上做全局比较（不再先锁定单一模型族）：
+ *   normal    → 达标点中综合成本最低者为基准；每多 1 IQ 最多接受 2% 成本溢价后仍取更聪明的
+ *   difficult → 同一规则，但使用更高的 IQ 门槛
+ *   critical  → 取最高 IQ；与最高 IQ 差距在容差内视为并列，取其中成本最低者
+ *
  * 用法:
  *   node select-review-model.mjs --difficulty normal
  *   node select-review-model.mjs --difficulty difficult
@@ -13,9 +25,10 @@
  * 输出 JSON:
  *   {
  *     "difficulty": "normal",
- *     "primary": { "model": "gpt-5.6-sol", "effort": "medium", "iq": 0.607, "cost": 3.63 },
+ *     "primary": { "model": "gpt-5.6-terra", "effort": "high",
+ *                  "iq": 75.9, "price": 1.1, "minutes": 12.6, "costIndex": 0.085 },
  *     "fallback": [
- *       { "model": "gpt-5.6-terra", "effort": "xhigh", ... }
+ *       { "model": "gpt-5.6-sol", "effort": "low", ... }
  *     ]
  *   }
  */
@@ -43,14 +56,26 @@ const DRADAR_MODEL_MAP = {
   'gpt-5-4-mini': 'gpt-5.4-mini',
 }
 
-// codex review 可用模型池（按偏好顺序不重要，脚本会按智商排序）
+// codex review 可用模型池（顺序不重要，选型在全局组合上比较）
 const REVIEW_MODELS = Object.values(DRADAR_MODEL_MAP)
 
-// 内置保守默认值（网络/缓存失败时兜底）
+// 综合成本指数权重：2.5 倍价格可换 1.35 倍速度（与站点 combinedEfficiencyIndex 一致）
+const SPEED_WEIGHT = Math.log(2.5) / Math.log(1.35)
+
+// IQ 刻度：站点图表用 p / n * 150
+const IQ_SCALE = 150
+
+// 每多 1 IQ 可接受的成本溢价比例（与站点“后台自动化”推荐规则一致）
+const COST_PREMIUM_PER_IQ = 0.02
+
+// 判定“并列最高 IQ”的容差（0-150 刻度）
+const IQ_TIE_TOLERANCE = 1.5
+
+// 内置保守默认值（网络/缓存失败时兜底，IQ 为 0-150 刻度）
 const BUILT_IN_DEFAULTS = {
-  normal:   { model: 'gpt-5.6-terra', effort: 'high',  iq: 0.55 },
-  difficult:{ model: 'gpt-5.6-sol',   effort: 'high',  iq: 0.67 },
-  critical: { model: 'gpt-5.6-sol',   effort: 'max',   iq: 0.68 },
+  normal:   { model: 'gpt-5.6-terra', effort: 'high', iq: 76 },
+  difficult:{ model: 'gpt-5.6-sol',   effort: 'high', iq: 91 },
+  critical: { model: 'gpt-5.6-sol',   effort: 'max',  iq: 100 },
 }
 
 // ── CLI 参数解析 ──────────────────────────────────
@@ -61,9 +86,10 @@ function parseArgs(argv) {
   }
   return {
     difficulty: get('--difficulty', 'normal'),
-    normalIq:   Number(get('--normal-iq',   '0.55')),
-    difficultIq:Number(get('--difficult-iq', '0.65')),
-    criticalIq: Number(get('--critical-iq', '0.70')),
+    // IQ 门槛为 0-150 刻度（站点图表同量纲）
+    normalIq:   Number(get('--normal-iq',    '70')),
+    difficultIq:Number(get('--difficult-iq', '88')),
+    criticalIq: Number(get('--critical-iq',  '96')),
   }
 }
 
@@ -135,6 +161,15 @@ async function fetchTable() {
 }
 
 // ── 数据聚合 ──────────────────────────────────────
+/**
+ * 综合成本：价格 × 时间惩罚。与站点 combinedEfficiencyIndex 同公式。
+ * 价格或耗时缺失时返回 null（该组合不参与成本敏感的选型）。
+ */
+function combinedCost(price, minutes) {
+  if (!(price > 0) || !(minutes > 0)) return null
+  return price * Math.pow(minutes / 10, SPEED_WEIGHT) * 100
+}
+
 function aggregate(data) {
   const cells = data?.cells || {}
   const agg = new Map() // key: "canonical|effort"
@@ -144,128 +179,159 @@ function aggregate(data) {
     if (parts.length < 3) continue
     const [, dradarModel, effort] = parts
     const canonical = DRADAR_MODEL_MAP[dradarModel]
+    if (!canonical) continue
+
     const graded = Number(cell?.n)
     const passed = Number(cell?.p)
-    if (!canonical || !Number.isFinite(graded) || graded <= 0) continue
 
     const mapKey = `${canonical}|${effort}`
     if (!agg.has(mapKey)) {
       agg.set(mapKey, {
         graded: 0,
         passed: 0,
-        cells: 0,
-        cellsPassed: 0,
-        costs: [],
-        durations: [],
+        costSum: 0,
+        costN: 0,
+        minutesSum: 0,
+        minutesN: 0,
       })
     }
     const a = agg.get(mapKey)
-    a.graded += graded
-    a.passed += Number.isFinite(passed) ? passed : 0
-    a.cells += 1
-    if (Number.isFinite(passed) && passed * 2 > graded) a.cellsPassed += 1
 
+    // IQ 只统计有评分的格子
+    if (Number.isFinite(graded) && graded > 0) {
+      a.graded += graded
+      a.passed += Number.isFinite(passed) ? passed : 0
+    }
+
+    // 价格与耗时取算术平均（与站点 averageActuals 一致）
     for (const run of cell.ran_by || []) {
       const c = run?.actual_cost_usd
-      if (typeof c === 'number' && Number.isFinite(c)) a.costs.push(c)
+      if (typeof c === 'number' && Number.isFinite(c)) {
+        a.costSum += c
+        a.costN += 1
+      }
       const d = run?.duration_sec
-      if (typeof d === 'number' && Number.isFinite(d)) a.durations.push(d)
+      if (typeof d === 'number' && Number.isFinite(d)) {
+        a.minutesSum += d / 60
+        a.minutesN += 1
+      }
     }
   }
 
   const result = []
   for (const [key, a] of agg.entries()) {
     const [canonical, effort] = key.split('|')
-    const iq = a.cells > 0 ? a.cellsPassed / a.cells : 0
-    const cost = a.costs.length > 0 ? median(a.costs) : null
-    const duration = a.durations.length > 0 ? median(a.durations) : null
+    if (a.graded <= 0) continue
+    const price = a.costN > 0 ? a.costSum / a.costN : null
+    const minutes = a.minutesN > 0 ? a.minutesSum / a.minutesN : null
     result.push({
       canonical,
       effort,
-      iq,
-      cost,
-      duration,
-      nCost: a.costs.length,
-      cells: a.cells,
+      iq: (a.passed / a.graded) * IQ_SCALE,
+      price,
+      minutes,
+      combined: combinedCost(price, minutes),
+      graded: a.graded,
+      nCost: a.costN,
     })
   }
   return result
 }
 
-function median(arr) {
-  const s = [...arr].sort((a, b) => a - b)
-  return s[Math.floor(s.length / 2)]
+// 过滤出候选池：仅保留 REVIEW_MODELS 且有综合成本数据的组合
+function buildCandidates(aggregated) {
+  return aggregated
+    .filter(r => REVIEW_MODELS.includes(r.canonical))
+    .filter(r => r.combined !== null)
 }
 
-// 按模型分组，只保留 REVIEW_MODELS
-function groupByModel(aggregated) {
-  const groups = {}
-  for (const r of aggregated) {
-    if (!REVIEW_MODELS.includes(r.canonical)) continue
-    if (!groups[r.canonical]) groups[r.canonical] = []
-    groups[r.canonical].push(r)
-  }
-  return groups
+// 归一化成本指数（最高 = 100），仅用于输出可读性，不影响排序
+function withCostIndex(candidates) {
+  const maxCombined = Math.max(...candidates.map(c => c.combined))
+  return candidates.map(c => ({
+    ...c,
+    costIndex: maxCombined > 0 ? (c.combined / maxCombined) * 100 : 0,
+  }))
 }
 
 // ── 选型逻辑 ──────────────────────────────────────
-function pickLeadModel(groups) {
-  let bestModel = null
-  let bestIq = -1
-  for (const [model, efforts] of Object.entries(groups)) {
-    const maxIq = Math.max(...efforts.map(e => e.iq))
-    if (maxIq > bestIq) {
-      bestIq = maxIq
-      bestModel = model
-    }
-  }
-  return bestModel
+
+/**
+ * 成本感知选型（用于 normal / difficult）：
+ * 1. 取 IQ >= threshold 的组合中综合成本最低者为基准
+ * 2. 在达标组合里找“更聪明且溢价可接受”的：每多 1 IQ 最多接受 2% 成本溢价
+ * 3. 若无组合达标，退化为全局 IQ 最高者（保证不会因门槛过高而无解）
+ */
+function selectCostAware(candidates, threshold) {
+  const eligible = candidates.filter(c => c.iq >= threshold)
+  if (eligible.length === 0) return selectHighestIq(candidates)
+
+  const baseline = [...eligible].sort(
+    (a, b) => a.combined - b.combined || b.iq - a.iq
+  )[0]
+
+  const upgrades = eligible
+    .filter(c => {
+      const gain = c.iq - baseline.iq
+      if (gain < IQ_TIE_TOLERANCE) return false
+      return c.combined <= baseline.combined * (1 + gain * COST_PREMIUM_PER_IQ)
+    })
+    .sort((a, b) => b.iq - a.iq || a.combined - b.combined)
+
+  return upgrades.length > 0 ? upgrades[0] : baseline
 }
 
 /**
- * 在单个模型的 effort 列表中，选 IQ >= threshold 的最便宜 effort（最左达标点）
- * 若都不达标，返回该模型中 IQ 最高的 effort（保底）
+ * 最高智力选型（用于 critical）：
+ * 取全局最高 IQ；与最高 IQ 差距在容差内视为并列，并列中取综合成本最低者。
+ * 这样可以避免为 <1.5 IQ 的噪声级差异付出数倍成本。
  */
-function selectEffortForModel(efforts, threshold) {
-  const withCost = efforts.filter(e => e.cost !== null)
-  if (withCost.length === 0) return efforts[0] || null
+function selectHighestIq(candidates) {
+  if (candidates.length === 0) return null
+  const topIq = Math.max(...candidates.map(c => c.iq))
+  return [...candidates]
+    .filter(c => c.iq >= topIq - IQ_TIE_TOLERANCE)
+    .sort((a, b) => a.combined - b.combined || b.iq - a.iq)[0]
+}
 
-  const sortedByCost = [...withCost].sort((a, b) => a.cost - b.cost)
-  const eligible = sortedByCost.filter(e => e.iq >= threshold)
-
-  if (eligible.length > 0) {
-    return eligible[0] // 最便宜的达标点（靠左）
-  }
-
-  // 都不达标，返回 IQ 最高的 effort
-  return [...sortedByCost].sort((a, b) => b.iq - a.iq)[0]
+function selectPrimary(candidates, difficulty, threshold) {
+  return difficulty === 'critical'
+    ? selectHighestIq(candidates)
+    : selectCostAware(candidates, threshold)
 }
 
 /**
- * 构建 fallback 链：按各模型 bestEffort IQ 降序，排除 lead model
- * 每个 fallback 执行相同的 threshold 逻辑
+ * 构建 fallback 链：每个**其他模型族**贡献一个候选，按 IQ 降序。
+ * fallback 用于 primary 模型不可用时重试，因此必须换模型族，
+ * 同族换 effort 无法绕过“模型不可用”这类失败。
  */
-function buildFallback(groups, leadModel, threshold) {
-  const others = Object.keys(groups).filter(m => m !== leadModel)
-  others.sort((a, b) => {
-    const ma = Math.max(...groups[a].map(e => e.iq))
-    const mb = Math.max(...groups[b].map(e => e.iq))
-    return mb - ma
-  })
+function buildFallback(candidates, primary, difficulty, threshold) {
+  const others = [...new Set(candidates.map(c => c.canonical))]
+    .filter(m => m !== primary.canonical)
 
-  const result = []
-  for (const m of others) {
-    const effort = selectEffortForModel(groups[m], threshold)
-    if (effort) {
-      result.push({
-        model: m,
-        effort: effort.effort,
-        iq: effort.iq,
-        cost: effort.cost,
-      })
-    }
+  const picks = []
+  for (const model of others) {
+    const pick = selectPrimary(
+      candidates.filter(c => c.canonical === model),
+      difficulty,
+      threshold
+    )
+    if (pick) picks.push(pick)
   }
-  return result
+  return picks.sort((a, b) => b.iq - a.iq || a.combined - b.combined)
+}
+
+// 输出格式化：保留数据便于人工核对选型是否合理
+function formatPick(pick) {
+  const round = (v, d) => (v === null || v === undefined ? null : Number(v.toFixed(d)))
+  return {
+    model: pick.canonical,
+    effort: pick.effort,
+    iq: round(pick.iq, 1),
+    price: round(pick.price, 3),
+    minutes: round(pick.minutes, 1),
+    costIndex: round(pick.costIndex, 3),
+  }
 }
 
 // ── 默认输出 ──────────────────────────────────────
@@ -309,29 +375,26 @@ async function main() {
     }
   }
 
-  // 2. 聚合
-  const aggregated = aggregate(data)
-  const groups = groupByModel(aggregated)
+  // 2. 聚合并构建全局候选池
+  const candidates = buildCandidates(aggregate(data))
+  if (candidates.length === 0) {
+    console.log(JSON.stringify(defaultOutput(difficulty), null, 2))
+    return
+  }
+  const scored = withCostIndex(candidates)
 
-  const lead = pickLeadModel(groups)
-  if (!lead || !groups[lead]) {
+  // 3. 全局选型（跨模型族比较，成本参与决策）
+  const primary = selectPrimary(scored, difficulty, threshold)
+  if (!primary) {
     console.log(JSON.stringify(defaultOutput(difficulty), null, 2))
     return
   }
 
-  // 3. 选型
-  const primaryEffort = selectEffortForModel(groups[lead], threshold)
-  const fallback = buildFallback(groups, lead, threshold)
-
   const output = {
     difficulty,
-    primary: {
-      model: lead,
-      effort: primaryEffort?.effort || 'high',
-      iq: primaryEffort?.iq ?? 0,
-      cost: primaryEffort?.cost ?? null,
-    },
-    fallback,
+    threshold,
+    primary: formatPick(primary),
+    fallback: buildFallback(scored, primary, difficulty, threshold).map(formatPick),
   }
 
   console.log(JSON.stringify(output, null, 2))

@@ -5,7 +5,7 @@ license: MIT
 compatibility: Designed for Claude Code; requires git and codex CLI; may also need project-specific lint or format tools available in PATH.
 metadata:
   author: BenedictKing
-  version: "2.3.0"
+  version: "2.4.0"
   user-invocable: "true"
 allowed-tools: Bash Read Glob Write Edit
 ---
@@ -142,12 +142,21 @@ git show --stat --format= HEAD | tail -1
 选型由 `scripts/select-review-model.mjs` 根据实时 codexradar 智商/成本数据驱动决定：
 1. 先判定难度等级（Normal / Difficult / Critical）
 2. 调用脚本获取该难度下的推荐 model + effort
-3. 脚本策略：选智商领头羊模型（当前通常是 `gpt-5.6-sol`），在其成本曲线上按难度滑动
-   - **普通** = IQ ≥ 阈值的最便宜 effort（靠左）
-   - **困难** = IQ ≥ 更高阈值的 effort（更靠右）
-   - **关键** = 全局最高 IQ effort（最靠右）
 
-脚本内置 1 小时 TTL 缓存（`~/.cache/codex-review/radar.json`），失败时回退到保守默认值：
+脚本指标与 codexradar 站点「综合成本 × 智力」图表同量纲：
+
+- `iq = p / n * 150`（0-150 刻度）
+- `costIndex ∝ price × (minutes / 10) ^ (ln2.5 / ln1.35)`（时间加权综合成本，最高归一为 100）
+
+选型在**全部 model × effort 组合上做全局比较**，成本直接参与决策（不是先锁定某个模型族再挑档位）：
+
+- **普通** = IQ ≥ 阈值(70) 的组合中综合成本最低者为基准；每多 1 IQ 最多接受 2% 成本溢价
+- **困难** = 同一规则，阈值提高到 88
+- **关键** = 全局最高 IQ；与最高 IQ 相差 < 1.5 视为并列，并列中取成本最低者
+
+最后一条容差很重要：它避免为噪声级的 IQ 差异付数倍成本（例如 `sol ultra` 仅比 `sol max` 高 0.9 IQ，成本指数却是 8 倍）。
+
+脚本内置 1 小时 TTL 缓存（`~/.cache/codex-review/radar.json`），网络与缓存都不可用时回退到保守默认值：
 
 | Difficulty | Built-in Default | Timeout |
 |------------|------------------|---------|
@@ -155,12 +164,14 @@ git show --stat --format= HEAD | tail -1
 | Difficult | `model=gpt-5.6-sol effort=high` | 15 min |
 | Critical | `model=gpt-5.6-sol effort=max` | 40 min |
 
+阈值可用 `--normal-iq` / `--difficult-iq` / `--critical-iq` 覆盖（0-150 刻度）。若阈值高到无组合达标，脚本退化为取全局最高 IQ，不会无解。
+
 **Model Fallback Policy:**
 
 - Determine availability from the actual `codex review` result. Do not use `codex debug models` as a preflight gate.
 - Treat only explicit model or reasoning-effort availability failures as a fallback trigger, such as a model not found, unavailable model access, or an unsupported reasoning effort.
 - Do not fall back for review findings, lint failures, authentication or network failures, timeouts, or a model-metadata warning when the review has started.
-- **Dynamic fallback chain**: use the `fallback` array returned by `select-review-model.mjs`, ordered by descending best-effort IQ. Retry each candidate in order after an explicit availability failure.
+- **Dynamic fallback chain**: use the `fallback` array returned by `select-review-model.mjs`, ordered by descending IQ. Each entry is from a **different model family** than the primary, because a same-family effort swap cannot work around a model-unavailable failure. Retry each candidate in order after an explicit availability failure.
 - If the script itself fails or returns no fallback, use the built-in defaults as the final fallback.
 - Run lint only once. On an availability failure, retry only `codex review` with the next candidate. Stop after exhausting the fallback chain and report the error.
 
@@ -227,8 +238,10 @@ git diff --stat HEAD | tail -1
 - ⭐ "50 files changed, 2000 insertions(+), 1500 deletions(-)" → **Critical task**, run script `--difficulty critical` → likely `model=gpt-5.6-sol effort=max`, timeout 40 minutes
 - ✅ "20 files changed, 342 insertions(+), 985 deletions(-)" → **Difficult task**, run script `--difficulty difficult` → likely `model=gpt-5.6-sol effort=high`, timeout 15 minutes
 - ✅ "5 files changed, 600 insertions(+), 50 deletions(-)" → **Difficult task**, run script `--difficulty difficult` → likely `model=gpt-5.6-sol effort=high`, timeout 15 minutes
-- ❌ "3 files changed, 150 insertions(+), 80 deletions(-)" → **Normal task**, run script `--difficulty normal` → likely `model=gpt-5.6-sol effort=medium`, timeout 10 minutes
-- ❌ "1 file changed, 50 insertions(+)" → **Normal task**, run script `--difficulty normal` → likely `model=gpt-5.6-sol effort=medium`, timeout 10 minutes
+- ❌ "3 files changed, 150 insertions(+), 80 deletions(-)" → **Normal task**, run script `--difficulty normal` → likely `model=gpt-5.6-terra effort=high`, timeout 10 minutes
+- ❌ "1 file changed, 50 insertions(+)" → **Normal task**, run script `--difficulty normal` → likely `model=gpt-5.6-terra effort=high`, timeout 10 minutes
+
+普通任务落在 `gpt-5.6-terra effort=high` 是符合预期的：它在成本-智力曲线上位于 Pareto 前沿，综合成本指数约 0.085，远低于全表中位数（约 0.65），而 IQ 仍有 75.9。相比之下 `sol medium` 多 9.8 IQ 却要 8 倍成本，不适合作为日常审查的默认档。
 
 **Dynamic Model Selection Flow:**
 
@@ -274,8 +287,8 @@ Model + timeout (by difficulty):
   Difficult: run script --difficulty difficult  → use returned primary, timeout 900000  (15 min)
   Normal:    run script --difficulty normal     → use returned primary, timeout 600000  (10 min)
 
-Example (Go, Normal, after script returns sol+medium):
-  go fmt ./... && go vet ./... && codex review --uncommitted --config model=gpt-5.6-sol --config model_reasoning_effort=medium
+Example (Go, Normal, after script returns terra+high):
+  go fmt ./... && go vet ./... && codex review --uncommitted --config model=gpt-5.6-terra --config model_reasoning_effort=high
 
 Clean working directory (review last commit, no lint):
   codex review --commit HEAD --config model=<primary-model> --config model_reasoning_effort=<primary-effort>

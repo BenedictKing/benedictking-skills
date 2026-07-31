@@ -37,17 +37,19 @@ Receives complete command chain through Task tool's prompt parameter:
 #   Python: black . && ruff check --fix .
 #
 # Model and effort are dynamically selected by the main skill; examples below show typical outputs:
-#   Normal              -> gpt-5.6-sol + medium  (cost-effective, IQ threshold 0.55)
-#   Difficult           -> gpt-5.6-sol + high    (higher IQ, threshold 0.65)
-#   Critical            -> gpt-5.6-sol + max     (highest IQ available)
+#   Normal              -> gpt-5.6-terra + high  (Pareto-frontier, IQ threshold 70 on the 0-150 scale)
+#   Difficult           -> gpt-5.6-sol   + high  (higher IQ, threshold 88)
+#   Critical            -> gpt-5.6-sol   + max   (highest IQ, cost-tiebroken within 1.5 IQ)
 #
 # Fallback order after an explicit model or reasoning-effort availability failure:
-#   Use the fallback array provided in the Task prompt, ordered by descending best-effort IQ.
+#   Use the fallback array provided in the Task prompt, ordered by descending IQ.
+#   Each candidate is from a different model family than the primary, since a same-family
+#   effort swap cannot work around a model-unavailable failure.
 #   Example fallback chain for normal difficulty:
-#     gpt-5.6-terra + xhigh -> gpt-5.5 + xhigh -> gpt-5.6-luna + max
+#     gpt-5.5 + high -> gpt-5.6-sol + low -> gpt-5.6-luna + xhigh
 
-# Example: Go project, Normal task (dynamic selection returned sol+medium)
-go fmt ./... && go vet ./... && codex review --uncommitted --config model=gpt-5.6-sol --config model_reasoning_effort=medium
+# Example: Go project, Normal task (dynamic selection returned terra+high)
+go fmt ./... && go vet ./... && codex review --uncommitted --config model=gpt-5.6-terra --config model_reasoning_effort=high
 
 # Review mode varies by working directory state. The model/effort come from select-review-model.mjs:
 codex review --uncommitted --config model=<model> --config model_reasoning_effort=<effort>   # normal uncommitted changes
