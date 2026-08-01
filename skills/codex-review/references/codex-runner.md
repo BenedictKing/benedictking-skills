@@ -1,6 +1,6 @@
 ---
 name: codex-runner
-version: 1.1.0
+version: 1.2.0
 author: BenedictKing
 description: Independent subtask for executing Lint and codex review with difficulty-based model selection and fallback (internal use)
 allowed-tools:
