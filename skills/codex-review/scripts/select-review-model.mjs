@@ -73,12 +73,12 @@ const IQ_SCALE = 150
 const IQ_TIE_TOLERANCE = 1.5
 
 // 各难度选型预算：时间上限 + IQ 下限 + 目标函数。
-//   normal    → objective 'cheapest'：耗时<=上限且 IQ>=floor 里最便宜者（日常审查省钱优先）
+//   normal    → objective 'cheapest'：耗时<=上限且 IQ>=floor(80) 里最便宜者（日常审查省钱优先，但要 IQ>80）
 //   difficult → objective 'smartest'：耗时<=上限里 IQ 最高者（并列取便宜，避开贵而不智的档）
 //   critical  → 同 smartest，时间预算更大
 // 时间上限天然排除慢档；smartest 的 IQ 并列容差避免为噪声级 IQ 差付数倍成本。
 const TIERS = {
-  normal:    { maxMinutes: 18, iqFloor: 70, objective: 'cheapest' },
+  normal:    { maxMinutes: 25, iqFloor: 80, objective: 'cheapest' },
   difficult: { maxMinutes: 28, iqFloor: 88, objective: 'smartest' },
   critical:  { maxMinutes: 45, iqFloor: 96, objective: 'smartest' },
 }
@@ -89,7 +89,7 @@ const TIMEOUT_FLOOR_MIN = 10
 
 // 内置保守默认值（网络/缓存失败时兜底；minutes 用于推导 timeout）
 const BUILT_IN_DEFAULTS = {
-  normal:    { model: 'gpt-5.6-luna', effort: 'high',  iq: 74.6,  minutes: 17.1 },
+  normal:    { model: 'gpt-5.6-luna', effort: 'xhigh', iq: 87.1,  minutes: 23.4 },
   difficult: { model: 'gpt-5.6-sol',  effort: 'xhigh', iq: 103.6, minutes: 26.4 },
   critical:  { model: 'gpt-5.6-sol',  effort: 'xhigh', iq: 103.6, minutes: 26.4 },
 }

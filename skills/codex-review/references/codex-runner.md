@@ -24,7 +24,7 @@ Receives complete command chain through Task tool's prompt parameter:
 2. **Review mode**: `--uncommitted` or `--commit HEAD` or `--base <branch>`
 3. **Model config**: `model` and `model_reasoning_effort` dynamically determined by the main skill via `select-review-model.mjs`
 4. **Fallback chain**: Ordered array of `{model, effort}` candidates returned by the script; retry each on explicit availability failure
-5. **Timeout**: Controlled through Task tool's timeout parameter, derived from the chosen candidate's measured minutes (script's `timeoutMs`, roughly 35 / 53 min under current data). Use the retried candidate's own timeout.
+5. **Timeout**: Controlled through Task tool's timeout parameter, derived from the chosen candidate's measured minutes (script's `timeoutMs`, roughly 47 / 53 min under current data). Use the retried candidate's own timeout.
 
 ## Command Examples
 
@@ -37,7 +37,7 @@ Receives complete command chain through Task tool's prompt parameter:
 #   Python: black . && ruff check --fix .
 #
 # Model and effort are dynamically selected by the main skill; examples below show typical outputs:
-#   Normal              -> gpt-5.6-luna + high  (cheapest with minutes<=18 & IQ>=70)
+#   Normal              -> gpt-5.6-luna + xhigh (cheapest with minutes<=25 & IQ>=80)
 #   Difficult           -> gpt-5.6-sol  + xhigh (max IQ with minutes<=28; tie->cheaper)
 #   Critical            -> gpt-5.6-sol  + xhigh (max IQ with minutes<=45; tie->cheaper)
 #
@@ -48,8 +48,8 @@ Receives complete command chain through Task tool's prompt parameter:
 #   Example fallback chain for difficult difficulty:
 #     gpt-5.5 + xhigh -> gpt-5.6-luna + xhigh -> gpt-5.6-terra + xhigh
 
-# Example: Go project, Normal task (dynamic selection returned luna+high)
-go fmt ./... && go vet ./... && codex review --uncommitted --config model=gpt-5.6-luna --config model_reasoning_effort=high
+# Example: Go project, Normal task (dynamic selection returned luna+xhigh)
+go fmt ./... && go vet ./... && codex review --uncommitted --config model=gpt-5.6-luna --config model_reasoning_effort=xhigh
 
 # Review mode varies by working directory state. The model/effort come from select-review-model.mjs:
 codex review --uncommitted --config model=<model> --config model_reasoning_effort=<effort>   # normal uncommitted changes
