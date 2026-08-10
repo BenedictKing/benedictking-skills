@@ -1,6 +1,6 @@
 ---
 name: codex-runner
-version: 1.2.0
+version: 1.3.0
 author: BenedictKing
 description: Independent subtask for executing Lint and codex review with difficulty-based model selection and fallback (internal use)
 allowed-tools:
@@ -24,7 +24,7 @@ Receives complete command chain through Task tool's prompt parameter:
 2. **Review mode**: `--uncommitted` or `--commit HEAD` or `--base <branch>`
 3. **Model config**: `model` and `model_reasoning_effort` dynamically determined by the main skill via `select-review-model.mjs`
 4. **Fallback chain**: Ordered array of `{model, effort}` candidates returned by the script; retry each on explicit availability failure
-5. **Timeout**: Controlled through Task tool's timeout parameter (typically 10 min normal, 15 min difficult, 40 min critical)
+5. **Timeout**: Controlled through Task tool's timeout parameter, derived from the chosen candidate's measured minutes (script's `timeoutMs`, roughly 35 / 53 min under current data). Use the retried candidate's own timeout.
 
 ## Command Examples
 
@@ -37,19 +37,19 @@ Receives complete command chain through Task tool's prompt parameter:
 #   Python: black . && ruff check --fix .
 #
 # Model and effort are dynamically selected by the main skill; examples below show typical outputs:
-#   Normal              -> gpt-5.6-terra + high  (Pareto-frontier, IQ threshold 70 on the 0-150 scale)
-#   Difficult           -> gpt-5.6-sol   + high  (higher IQ, threshold 88)
-#   Critical            -> gpt-5.6-sol   + max   (highest IQ, cost-tiebroken within 1.5 IQ)
+#   Normal              -> gpt-5.6-luna + high  (cheapest with minutes<=18 & IQ>=70)
+#   Difficult           -> gpt-5.6-sol  + xhigh (max IQ with minutes<=28; tie->cheaper)
+#   Critical            -> gpt-5.6-sol  + xhigh (max IQ with minutes<=45; tie->cheaper)
 #
 # Fallback order after an explicit model or reasoning-effort availability failure:
 #   Use the fallback array provided in the Task prompt, ordered by descending IQ.
 #   Each candidate is from a different model family than the primary, since a same-family
-#   effort swap cannot work around a model-unavailable failure.
-#   Example fallback chain for normal difficulty:
-#     gpt-5.5 + high -> gpt-5.6-sol + low -> gpt-5.6-luna + xhigh
+#   effort swap cannot work around a model-unavailable failure. Each carries its own timeoutMs.
+#   Example fallback chain for difficult difficulty:
+#     gpt-5.5 + xhigh -> gpt-5.6-luna + xhigh -> gpt-5.6-terra + xhigh
 
-# Example: Go project, Normal task (dynamic selection returned terra+high)
-go fmt ./... && go vet ./... && codex review --uncommitted --config model=gpt-5.6-terra --config model_reasoning_effort=high
+# Example: Go project, Normal task (dynamic selection returned luna+high)
+go fmt ./... && go vet ./... && codex review --uncommitted --config model=gpt-5.6-luna --config model_reasoning_effort=high
 
 # Review mode varies by working directory state. The model/effort come from select-review-model.mjs:
 codex review --uncommitted --config model=<model> --config model_reasoning_effort=<effort>   # normal uncommitted changes
@@ -89,6 +89,6 @@ Returns complete output directly, including:
 
 - Must be executed in git repository directory
 - Ensure codex command is properly configured and logged in
-- Timeout is controlled by the caller through the Task timeout parameter
+- Timeout is controlled by the caller through the Task timeout parameter, derived from the candidate's measured minutes
 - Commands are chained with `&&`, so lint failure will stop the subsequent codex review
 - Do not fall back for review findings, lint failures, authentication or network failures, timeouts, or metadata warnings when the review starts successfully

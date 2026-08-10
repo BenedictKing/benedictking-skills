@@ -9,26 +9,30 @@
  *   iq       = p / n * 150                                   （0-150 刻度）
  *   price    = mean(actual_cost_usd)                          （美元）
  *   minutes  = mean(duration_sec) / 60                         （分钟）
- *   combined = price * (minutes / 10) ^ (ln2.5 / ln1.35) * 100  （时间加权综合成本）
- *   costIndex = combined / max(combined) * 100                 （归一化，最高 = 100）
+ *   costIndex = 时间加权综合成本，归一化最高=100（仅展示，不参与选型）
  *
- * 选型在**全部 model × effort 组合**上做全局比较（不再先锁定单一模型族）：
- *   normal    → 达标点中综合成本最低者为基准；每多 1 IQ 最多接受 2% 成本溢价后仍取更聪明的
- *   difficult → 同一规则，但使用更高的 IQ 门槛
- *   critical  → 取最高 IQ；与最高 IQ 差距在容差内视为并列，取其中成本最低者
+ * 选型主约束是**实测平均耗时**（时间预算），配合每档一个目标函数：
+ *   normal    → 耗时<=上限且 IQ>=下限 里最便宜者（日常审查省钱优先）
+ *   difficult → 耗时<=上限里 IQ 最高者，IQ 并列容差内取便宜者
+ *   critical  → 同 difficult，时间预算更大（当前数据下同落 sol xhigh 拐点）
+ * 时间预算天然排除慢档，也让“贵而不智”的档（如 sol max 之于 sol xhigh）不会中选。
+ * 超时不再写死，而是 timeout = ceil(minutes * 2)，随选型走。
  *
  * 用法:
  *   node select-review-model.mjs --difficulty normal
  *   node select-review-model.mjs --difficulty difficult
  *   node select-review-model.mjs --difficulty critical
+ *   node select-review-model.mjs --difficulty difficult --max-minutes 35 --iq-floor 90
  *
  * 输出 JSON:
  *   {
- *     "difficulty": "normal",
- *     "primary": { "model": "gpt-5.6-terra", "effort": "high",
- *                  "iq": 75.9, "price": 1.1, "minutes": 12.6, "costIndex": 0.085 },
+ *     "difficulty": "difficult",
+ *     "tier": { "maxMinutes": 28, "iqFloor": 88 },
+ *     "primary": { "model": "gpt-5.6-sol", "effort": "xhigh", "iq": 103.6,
+ *                  "price": 6.26, "minutes": 26.4, "costIndex": 30,
+ *                  "timeoutMinutes": 53, "timeoutMs": 3180000 },
  *     "fallback": [
- *       { "model": "gpt-5.6-sol", "effort": "low", ... }
+ *       { "model": "gpt-5.5", "effort": "xhigh", ... "timeoutMs": ... }
  *     ]
  *   }
  */
@@ -59,23 +63,35 @@ const DRADAR_MODEL_MAP = {
 // codex review 可用模型池（顺序不重要，选型在全局组合上比较）
 const REVIEW_MODELS = Object.values(DRADAR_MODEL_MAP)
 
-// 综合成本指数权重：2.5 倍价格可换 1.35 倍速度（与站点 combinedEfficiencyIndex 一致）
+// 综合成本指数权重：2.5 倍价格可换 1.35 倍速度（仅用于 costIndex 展示，不参与选型）
 const SPEED_WEIGHT = Math.log(2.5) / Math.log(1.35)
 
 // IQ 刻度：站点图表用 p / n * 150
 const IQ_SCALE = 150
 
-// 每多 1 IQ 可接受的成本溢价比例（与站点“后台自动化”推荐规则一致）
-const COST_PREMIUM_PER_IQ = 0.02
-
 // 判定“并列最高 IQ”的容差（0-150 刻度）
 const IQ_TIE_TOLERANCE = 1.5
 
-// 内置保守默认值（网络/缓存失败时兜底，IQ 为 0-150 刻度）
+// 各难度选型预算：时间上限 + IQ 下限 + 目标函数。
+//   normal    → objective 'cheapest'：耗时<=上限且 IQ>=floor 里最便宜者（日常审查省钱优先）
+//   difficult → objective 'smartest'：耗时<=上限里 IQ 最高者（并列取便宜，避开贵而不智的档）
+//   critical  → 同 smartest，时间预算更大
+// 时间上限天然排除慢档；smartest 的 IQ 并列容差避免为噪声级 IQ 差付数倍成本。
+const TIERS = {
+  normal:    { maxMinutes: 18, iqFloor: 70, objective: 'cheapest' },
+  difficult: { maxMinutes: 28, iqFloor: 88, objective: 'smartest' },
+  critical:  { maxMinutes: 45, iqFloor: 96, objective: 'smartest' },
+}
+
+// 超时按选中模型的实测平均耗时推导：timeout = ceil(minutes * SAFETY)，不低于下限。
+const TIMEOUT_SAFETY = 2
+const TIMEOUT_FLOOR_MIN = 10
+
+// 内置保守默认值（网络/缓存失败时兜底；minutes 用于推导 timeout）
 const BUILT_IN_DEFAULTS = {
-  normal:   { model: 'gpt-5.6-terra', effort: 'high', iq: 76 },
-  difficult:{ model: 'gpt-5.6-sol',   effort: 'high', iq: 91 },
-  critical: { model: 'gpt-5.6-sol',   effort: 'max',  iq: 100 },
+  normal:    { model: 'gpt-5.6-luna', effort: 'high',  iq: 74.6,  minutes: 17.1 },
+  difficult: { model: 'gpt-5.6-sol',  effort: 'xhigh', iq: 103.6, minutes: 26.4 },
+  critical:  { model: 'gpt-5.6-sol',  effort: 'xhigh', iq: 103.6, minutes: 26.4 },
 }
 
 // ── CLI 参数解析 ──────────────────────────────────
@@ -86,10 +102,9 @@ function parseArgs(argv) {
   }
   return {
     difficulty: get('--difficulty', 'normal'),
-    // IQ 门槛为 0-150 刻度（站点图表同量纲）
-    normalIq:   Number(get('--normal-iq',    '70')),
-    difficultIq:Number(get('--difficult-iq', '88')),
-    criticalIq: Number(get('--critical-iq',  '96')),
+    // 覆盖该难度的时间预算（分钟）与 IQ 兜底下限（0-150 刻度）
+    maxMinutes: get('--max-minutes', null),
+    iqFloor:    get('--iq-floor',    null),
   }
 }
 
@@ -256,74 +271,75 @@ function withCostIndex(candidates) {
 
 // ── 选型逻辑 ──────────────────────────────────────
 
-/**
- * 成本感知选型（用于 normal / difficult）：
- * 1. 取 IQ >= threshold 的组合中综合成本最低者为基准
- * 2. 在达标组合里找“更聪明且溢价可接受”的：每多 1 IQ 最多接受 2% 成本溢价
- * 3. 若无组合达标，退化为全局 IQ 最高者（保证不会因门槛过高而无解）
- */
-function selectCostAware(candidates, threshold) {
-  const eligible = candidates.filter(c => c.iq >= threshold)
-  if (eligible.length === 0) return selectHighestIq(candidates)
+// 超时按实测平均耗时推导，让时限跟着选型走
+// （旧版写死的 10/15/40min 会被现在的高档全部超过）。
+function deriveTimeout(minutes) {
+  const m = Math.max(
+    TIMEOUT_FLOOR_MIN,
+    Math.ceil((minutes || TIMEOUT_FLOOR_MIN) * TIMEOUT_SAFETY)
+  )
+  return { timeoutMinutes: m, timeoutMs: m * 60 * 1000 }
+}
 
-  const baseline = [...eligible].sort(
-    (a, b) => a.combined - b.combined || b.iq - a.iq
+const feasible = (cands, maxMinutes) => cands.filter(c => c.minutes <= maxMinutes)
+
+// cheapest 目标：耗时<=上限且 IQ>=floor 里取最便宜；同价取更聪明、更快。
+// 先过滤 IQ 下限，避免选到“便宜但没智商”的档。
+function pickCheapest(cands, tier) {
+  const f = feasible(cands, tier.maxMinutes).filter(c => c.iq >= tier.iqFloor)
+  if (f.length === 0) return null
+  return [...f].sort(
+    (a, b) => a.price - b.price || b.iq - a.iq || a.minutes - b.minutes
   )[0]
-
-  const upgrades = eligible
-    .filter(c => {
-      const gain = c.iq - baseline.iq
-      if (gain < IQ_TIE_TOLERANCE) return false
-      return c.combined <= baseline.combined * (1 + gain * COST_PREMIUM_PER_IQ)
-    })
-    .sort((a, b) => b.iq - a.iq || a.combined - b.combined)
-
-  return upgrades.length > 0 ? upgrades[0] : baseline
 }
 
-/**
- * 最高智力选型（用于 critical）：
- * 取全局最高 IQ；与最高 IQ 差距在容差内视为并列，并列中取综合成本最低者。
- * 这样可以避免为 <1.5 IQ 的噪声级差异付出数倍成本。
- */
-function selectHighestIq(candidates) {
-  if (candidates.length === 0) return null
-  const topIq = Math.max(...candidates.map(c => c.iq))
-  return [...candidates]
+// smartest 目标：耗时<=上限里取 IQ 最高；与最高差 < IQ_TIE_TOLERANCE 视为并列，
+// 并列取便宜者。绕开“贵而不智”的档（如 sol max 之于 sol xhigh）。
+function pickSmartest(cands, maxMinutes) {
+  const f = feasible(cands, maxMinutes)
+  if (f.length === 0) return null
+  const topIq = Math.max(...f.map(c => c.iq))
+  return f
     .filter(c => c.iq >= topIq - IQ_TIE_TOLERANCE)
-    .sort((a, b) => a.combined - b.combined || b.iq - a.iq)[0]
+    .sort((a, b) => a.price - b.price || a.minutes - b.minutes)[0]
 }
 
-function selectPrimary(candidates, difficulty, threshold) {
-  return difficulty === 'critical'
-    ? selectHighestIq(candidates)
-    : selectCostAware(candidates, threshold)
+// 全局 IQ 最高者（时间预算内无人达标时的兜底）。
+function globalTop(cands) {
+  if (cands.length === 0) return null
+  return [...cands].sort((a, b) => b.iq - a.iq || a.price - b.price)[0]
+}
+
+// 主选型：cheapest / smartest 二目标；预算内无解则退化为全局最强（接受更长耗时，timeout 随之变大）。
+function selectPrimary(candidates, tier) {
+  const pick = tier.objective === 'cheapest'
+    ? pickCheapest(candidates, tier)
+    : pickSmartest(candidates, tier.maxMinutes)
+  return pick || globalTop(candidates)
 }
 
 /**
- * 构建 fallback 链：每个**其他模型族**贡献一个候选，按 IQ 降序。
- * fallback 用于 primary 模型不可用时重试，因此必须换模型族，
- * 同族换 effort 无法绕过“模型不可用”这类失败。
+ * fallback 链：每个**其他模型族**贡献一个候选（同族换 effort 绕不过“模型不可用”）。
+ * 每族按 tier 目标取时间预算内最佳；该族全都超时则退化为该族全局最强，保证有可替代项。
+ * 按 IQ 降序返回；每个候选带自己的 minutes / timeout，重试时用它自己的时限。
  */
-function buildFallback(candidates, primary, difficulty, threshold) {
+function buildFallback(candidates, primary, tier) {
   const others = [...new Set(candidates.map(c => c.canonical))]
     .filter(m => m !== primary.canonical)
 
   const picks = []
   for (const model of others) {
-    const pick = selectPrimary(
-      candidates.filter(c => c.canonical === model),
-      difficulty,
-      threshold
-    )
+    const fam = candidates.filter(c => c.canonical === model)
+    const pick = selectPrimary(fam, tier)
     if (pick) picks.push(pick)
   }
-  return picks.sort((a, b) => b.iq - a.iq || a.combined - b.combined)
+  return picks.sort((a, b) => b.iq - a.iq || a.price - b.price)
 }
 
-// 输出格式化：保留数据便于人工核对选型是否合理
+// 输出格式化：保留数据便于人工核对选型是否合理；timeout 由 minutes 推导
 function formatPick(pick) {
   const round = (v, d) => (v === null || v === undefined ? null : Number(v.toFixed(d)))
+  const { timeoutMinutes, timeoutMs } = deriveTimeout(pick.minutes)
   return {
     model: pick.canonical,
     effort: pick.effort,
@@ -331,15 +347,18 @@ function formatPick(pick) {
     price: round(pick.price, 3),
     minutes: round(pick.minutes, 1),
     costIndex: round(pick.costIndex, 3),
+    timeoutMinutes,
+    timeoutMs,
   }
 }
 
 // ── 默认输出 ──────────────────────────────────────
 function defaultOutput(difficulty) {
   const d = BUILT_IN_DEFAULTS[difficulty] || BUILT_IN_DEFAULTS.normal
+  const { timeoutMinutes, timeoutMs } = deriveTimeout(d.minutes)
   return {
     difficulty,
-    primary: { ...d },
+    primary: { ...d, timeoutMinutes, timeoutMs },
     fallback: [],
   }
 }
@@ -348,12 +367,12 @@ function defaultOutput(difficulty) {
 async function main() {
   const args = parseArgs(process.argv.slice(2))
   const difficulty = args.difficulty
-  const thresholds = {
-    normal:    args.normalIq,
-    difficult: args.difficultIq,
-    critical:  args.criticalIq,
+  const base = TIERS[difficulty] || TIERS.normal
+  const tier = {
+    objective:  base.objective,
+    maxMinutes: args.maxMinutes != null ? Number(args.maxMinutes) : base.maxMinutes,
+    iqFloor:    args.iqFloor    != null ? Number(args.iqFloor)    : base.iqFloor,
   }
-  const threshold = thresholds[difficulty] ?? thresholds.normal
 
   // 1. 获取数据（缓存优先）
   let data
@@ -383,8 +402,8 @@ async function main() {
   }
   const scored = withCostIndex(candidates)
 
-  // 3. 全局选型（跨模型族比较，成本参与决策）
-  const primary = selectPrimary(scored, difficulty, threshold)
+  // 3. 选型：时间预算内 IQ 最高者，跨模型族比较
+  const primary = selectPrimary(scored, tier)
   if (!primary) {
     console.log(JSON.stringify(defaultOutput(difficulty), null, 2))
     return
@@ -392,9 +411,9 @@ async function main() {
 
   const output = {
     difficulty,
-    threshold,
+    tier,
     primary: formatPick(primary),
-    fallback: buildFallback(scored, primary, difficulty, threshold).map(formatPick),
+    fallback: buildFallback(scored, primary, tier).map(formatPick),
   }
 
   console.log(JSON.stringify(output, null, 2))

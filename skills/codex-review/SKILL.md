@@ -5,7 +5,7 @@ license: MIT
 compatibility: Designed for Claude Code; requires git and codex CLI; may also need project-specific lint or format tools available in PATH.
 metadata:
   author: BenedictKing
-  version: "2.4.0"
+  version: "2.5.0"
   user-invocable: "true"
 allowed-tools: Bash Read Glob Write Edit
 ---
@@ -139,32 +139,37 @@ git show --stat --format= HEAD | tail -1
 
 **Model + Reasoning Effort Combinations:**
 
-选型由 `scripts/select-review-model.mjs` 根据实时 codexradar 智商/成本数据驱动决定：
+选型由 `scripts/select-review-model.mjs` 根据实时 codexradar 智商/成本/耗时数据驱动决定：
 1. 先判定难度等级（Normal / Difficult / Critical）
-2. 调用脚本获取该难度下的推荐 model + effort
+2. 调用脚本获取该难度下的推荐 model + effort（以及按实测耗时推导的 timeout）
 
 脚本指标与 codexradar 站点「综合成本 × 智力」图表同量纲：
 
 - `iq = p / n * 150`（0-150 刻度）
-- `costIndex ∝ price × (minutes / 10) ^ (ln2.5 / ln1.35)`（时间加权综合成本，最高归一为 100）
+- `price = mean(actual_cost_usd)`；`minutes = mean(duration_sec) / 60`
 
-选型在**全部 model × effort 组合上做全局比较**，成本直接参与决策（不是先锁定某个模型族再挑档位）：
+选型主约束是**实测平均耗时**（时间预算），每档一个目标函数，在全部 model × effort 组合上全局比较：
 
-- **普通** = IQ ≥ 阈值(70) 的组合中综合成本最低者为基准；每多 1 IQ 最多接受 2% 成本溢价
-- **困难** = 同一规则，阈值提高到 88
-- **关键** = 全局最高 IQ；与最高 IQ 相差 < 1.5 视为并列，并列中取成本最低者
+- **普通** = 平均耗时 ≤ 18min 且 IQ ≥ 70 的组合里**最便宜**者（日常审查省钱优先）
+- **困难** = 平均耗时 ≤ 28min 的组合里 **IQ 最高**者；IQ 并列容差（<1.5）内取更便宜者
+- **关键** = 同困难，但时间预算放宽到 45min
 
-最后一条容差很重要：它避免为噪声级的 IQ 差异付数倍成本（例如 `sol ultra` 仅比 `sol max` 高 0.9 IQ，成本指数却是 8 倍）。
+两条规则合起来天然落在成本-智力 Pareto 前沿上：
+
+- 时间预算排除慢档（避免选到平均耗时远超预期的"高 effort 慢档"）。
+- IQ 并列容差避免为噪声级 IQ 差付数倍成本，也让"贵而不智"的档（如 `sol max` 比 `sol xhigh` 贵还弱）不会中选。
+
+**超时不再写死**：`timeout = ceil(实测平均分钟 × 2)`，随选中档位走，由脚本输出的 `timeoutMinutes` / `timeoutMs` 给出。fallback 候选也各带自己的 timeout，重试时用它自己的时限。
 
 脚本内置 1 小时 TTL 缓存（`~/.cache/codex-review/radar.json`），网络与缓存都不可用时回退到保守默认值：
 
-| Difficulty | Built-in Default | Timeout |
+| Difficulty | Built-in Default | 推导 Timeout |
 |------------|------------------|---------|
-| Normal | `model=gpt-5.6-terra effort=high` | 10 min |
-| Difficult | `model=gpt-5.6-sol effort=high` | 15 min |
-| Critical | `model=gpt-5.6-sol effort=max` | 40 min |
+| Normal | `model=gpt-5.6-luna effort=high` | 35 min |
+| Difficult | `model=gpt-5.6-sol effort=xhigh` | 53 min |
+| Critical | `model=gpt-5.6-sol effort=xhigh` | 53 min |
 
-阈值可用 `--normal-iq` / `--difficult-iq` / `--critical-iq` 覆盖（0-150 刻度）。若阈值高到无组合达标，脚本退化为取全局最高 IQ，不会无解。
+时间预算与 IQ 下限可用 `--max-minutes` / `--iq-floor` 覆盖（分钟 / 0-150 刻度）。若时间预算内无组合达标，脚本退化为取全局最高 IQ，不会无解。
 
 **Model Fallback Policy:**
 
@@ -172,6 +177,7 @@ git show --stat --format= HEAD | tail -1
 - Treat only explicit model or reasoning-effort availability failures as a fallback trigger, such as a model not found, unavailable model access, or an unsupported reasoning effort.
 - Do not fall back for review findings, lint failures, authentication or network failures, timeouts, or a model-metadata warning when the review has started.
 - **Dynamic fallback chain**: use the `fallback` array returned by `select-review-model.mjs`, ordered by descending IQ. Each entry is from a **different model family** than the primary, because a same-family effort swap cannot work around a model-unavailable failure. Retry each candidate in order after an explicit availability failure.
+- **Per-candidate timeout**: each fallback entry includes its own `timeoutMs` (derived from that candidate's measured minutes). Use it when retrying, not the primary's timeout.
 - If the script itself fails or returns no fallback, use the built-in defaults as the final fallback.
 - Run lint only once. On an availability failure, retry only `codex review` with the next candidate. Stop after exhausting the fallback chain and report the error.
 
@@ -180,8 +186,8 @@ git show --stat --format= HEAD | tail -1
 - Modified files ≥ 30
 - Total code changes (insertions + deletions) ≥ 2000 lines
 - Involves core architecture/algorithm changes (user explicitly mentioned)
-- **Config**: Run `node <skill-dir>/scripts/select-review-model.mjs --difficulty critical` to get primary model/effort, timeout 40 minutes
-- If the script is unavailable, fallback to built-in default: `model=gpt-5.6-sol effort=max`
+- **Config**: Run `node <skill-dir>/scripts/select-review-model.mjs --difficulty critical`; use the returned primary `model`/`effort` and the returned `timeoutMs` as the Task timeout
+- If the script is unavailable, fallback to built-in default: `model=gpt-5.6-sol effort=xhigh`, timeout 53 minutes
 
 **Difficult Tasks** (meets any condition):
 
@@ -189,13 +195,13 @@ git show --stat --format= HEAD | tail -1
 - Total code changes (insertions + deletions) ≥ 500 lines
 - Single metric: insertions ≥ 300 lines OR deletions ≥ 300 lines
 - Cross-module refactoring
-- **Config**: Run `node <skill-dir>/scripts/select-review-model.mjs --difficulty difficult` to get primary model/effort, timeout 15 minutes
-- If the script is unavailable, fallback to built-in default: `model=gpt-5.6-sol effort=high`
+- **Config**: Run `node <skill-dir>/scripts/select-review-model.mjs --difficulty difficult`; use the returned primary `model`/`effort` and `timeoutMs`
+- If the script is unavailable, fallback to built-in default: `model=gpt-5.6-sol effort=xhigh`, timeout 53 minutes
 
 **Normal Tasks** (other cases):
 
-- **Config**: Run `node <skill-dir>/scripts/select-review-model.mjs --difficulty normal` to get primary model/effort, timeout 10 minutes
-- If the script is unavailable, fallback to built-in default: `model=gpt-5.6-terra effort=high`
+- **Config**: Run `node <skill-dir>/scripts/select-review-model.mjs --difficulty normal`; use the returned primary `model`/`effort` and `timeoutMs`
+- If the script is unavailable, fallback to built-in default: `model=gpt-5.6-luna effort=high`, timeout 35 minutes
 
 **Evaluation Method:**
 
@@ -235,13 +241,13 @@ git diff --stat HEAD | tail -1
 - ELSE → **Normal** (run script `--difficulty normal`)
 
 **Example Cases:**
-- ⭐ "50 files changed, 2000 insertions(+), 1500 deletions(-)" → **Critical task**, run script `--difficulty critical` → likely `model=gpt-5.6-sol effort=max`, timeout 40 minutes
-- ✅ "20 files changed, 342 insertions(+), 985 deletions(-)" → **Difficult task**, run script `--difficulty difficult` → likely `model=gpt-5.6-sol effort=high`, timeout 15 minutes
-- ✅ "5 files changed, 600 insertions(+), 50 deletions(-)" → **Difficult task**, run script `--difficulty difficult` → likely `model=gpt-5.6-sol effort=high`, timeout 15 minutes
-- ❌ "3 files changed, 150 insertions(+), 80 deletions(-)" → **Normal task**, run script `--difficulty normal` → likely `model=gpt-5.6-terra effort=high`, timeout 10 minutes
-- ❌ "1 file changed, 50 insertions(+)" → **Normal task**, run script `--difficulty normal` → likely `model=gpt-5.6-terra effort=high`, timeout 10 minutes
+- ⭐ "50 files changed, 2000 insertions(+), 1500 deletions(-)" → **Critical task**, run script `--difficulty critical` → use returned primary (currently `gpt-5.6-sol effort=xhigh`), use returned `timeoutMs`
+- ✅ "20 files changed, 342 insertions(+), 985 deletions(-)" → **Difficult task**, run script `--difficulty difficult` → use returned primary (currently `gpt-5.6-sol effort=xhigh`), use returned `timeoutMs`
+- ✅ "5 files changed, 600 insertions(+), 50 deletions(-)" → **Difficult task**, run script `--difficulty difficult` → use returned primary (currently `gpt-5.6-sol effort=xhigh`), use returned `timeoutMs`
+- ❌ "3 files changed, 150 insertions(+), 80 deletions(-)" → **Normal task**, run script `--difficulty normal` → use returned primary (currently `gpt-5.6-luna effort=high`), use returned `timeoutMs`
+- ❌ "1 file changed, 50 insertions(+)" → **Normal task**, run script `--difficulty normal` → use returned primary (currently `gpt-5.6-luna effort=high`), use returned `timeoutMs`
 
-普通任务落在 `gpt-5.6-terra effort=high` 是符合预期的：它在成本-智力曲线上位于 Pareto 前沿，综合成本指数约 0.085，远低于全表中位数（约 0.65），而 IQ 仍有 75.9。相比之下 `sol medium` 多 9.8 IQ 却要 8 倍成本，不适合作为日常审查的默认档。
+普通任务落在 `gpt-5.6-luna effort=high` 是符合预期的：它同时满足"耗时 ≤ 18min 且 IQ ≥ 70"，且全表最便宜（约 $0.2 / 17min / IQ 74.6）。在 Pareto 前沿上再往上，`terra max` 仅多 2.7 IQ 却要近 8 倍成本，`sol max` 比 `sol xhigh` 贵还弱——这类坏拐点都被选型规则跳过。困难/关键档当前都落在 `sol xhigh`：它是高价区性价比拐点（IQ 103.6 / $6.26 / 26min），比顶点 `sol ultra`（106.7 / $20.95 / 54min）只低 3 IQ，成本却只有 1/3。
 
 **Dynamic Model Selection Flow:**
 
@@ -253,9 +259,10 @@ SKILL_DIR="$(cd "$(dirname "$0")" && pwd)/scripts" 2>/dev/null || SKILL_DIR="$HO
 MODEL_JSON=$(node "$SKILL_DIR/select-review-model.mjs" --difficulty <normal|difficult|critical>)
 PRIMARY_MODEL=$(echo "$MODEL_JSON" | jq -r '.primary.model')
 PRIMARY_EFFORT=$(echo "$MODEL_JSON" | jq -r '.primary.effort')
+PRIMARY_TIMEOUT_MS=$(echo "$MODEL_JSON" | jq -r '.primary.timeoutMs')   # timeout derived from measured minutes
 ```
 
-Use the extracted `PRIMARY_MODEL` and `PRIMARY_EFFORT` to build the review command.
+Use the extracted `PRIMARY_MODEL` and `PRIMARY_EFFORT` to build the review command, and `PRIMARY_TIMEOUT_MS` as the Task timeout.
 
 **Invoke codex-runner Subtask:**
 
@@ -265,7 +272,7 @@ Use Task tool to invoke codex-runner, passing complete command (including Lint +
 Task parameters:
 - subagent_type: Bash
 - description: "Execute Lint and codex review"
-- timeout: 2400000 (40 minutes for critical tasks) / 900000 (15 minutes for difficult tasks) / 600000 (10 minutes for normal tasks)
+- timeout: <timeoutMs from the selection script>   (derived from the chosen model's measured minutes)
 - prompt: Choose corresponding command based on project type and difficulty
 
 Build the prompt as:
@@ -275,24 +282,24 @@ Pass exactly these flags and nothing else. Do not add --full-auto, -s/--sandbox,
 --dangerously-* flag: `codex review` does not accept them (see "CLI Compatibility and Flag
 Discipline"), and adding one is an unrequested safety-gate bypass.
 
-After lint succeeds, apply the dynamic fallback policy. Retry only `codex review <mode>` with the next candidate from the fallback array after an explicit model or reasoning-effort availability failure.
+After lint succeeds, apply the dynamic fallback policy. Retry only `codex review <mode>` with the next candidate from the fallback array after an explicit model or reasoning-effort availability failure. Use that candidate's own timeoutMs for the retry.
 
 Lint command (by project type):
   Go:     go fmt ./... && go vet ./...
   Node:   npm run lint:fix
   Python: black . && ruff check --fix .
 
-Model + timeout (by difficulty):
-  Critical:  run script --difficulty critical  → use returned primary, timeout 2400000 (40 min)
-  Difficult: run script --difficulty difficult  → use returned primary, timeout 900000  (15 min)
-  Normal:    run script --difficulty normal     → use returned primary, timeout 600000  (10 min)
+Model + timeout (by difficulty, both from the selection script):
+  Critical:  run script --difficulty critical  → use returned primary model/effort/timeoutMs
+  Difficult: run script --difficulty difficult  → use returned primary model/effort/timeoutMs
+  Normal:    run script --difficulty normal     → use returned primary model/effort/timeoutMs
 
-Example (Go, Normal, after script returns terra+high):
-  go fmt ./... && go vet ./... && codex review --uncommitted --config model=gpt-5.6-terra --config model_reasoning_effort=high
+Example (Go, Normal, after script returns luna+high):
+  go fmt ./... && go vet ./... && codex review --uncommitted --config model=gpt-5.6-luna --config model_reasoning_effort=high
 
 Clean working directory (review last commit, no lint):
   codex review --commit HEAD --config model=<primary-model> --config model_reasoning_effort=<primary-effort>
-  (model/effort obtained from select-review-model.mjs)
+  (model/effort/timeout obtained from select-review-model.mjs)
 ```
 
 ### 4. Self-Correction and Severity-Driven Fixes
@@ -437,10 +444,7 @@ codex review -h   # authoritative list of accepted flags for THIS version
 
 - Ensure execution in git repository directory
 - **Verify CLI surface before improvising flags**: run `codex --version` and `codex review -h`. Only the flags that `-h` lists are valid on this version. Never add `--full-auto`, `-s/--sandbox`, or `--dangerously-*` to `codex review`.
-- **Timeout automatically adjusted based on task difficulty:**
-  - Critical tasks: 40 minutes (`timeout: 2400000`)
-  - Difficult tasks: 15 minutes (`timeout: 900000`)
-  - Normal tasks: 10 minutes (`timeout: 600000`)
+- **Timeout derived from the chosen model**: the script returns `timeoutMs` = `ceil(measuredMinutes × 2)` per candidate (roughly 35 / 53 min under current data). Use the selected candidate's `timeoutMs` as the Task timeout, not a fixed per-difficulty constant.
 - codex command must be properly configured and logged in
 - codex automatically processes in batches for large changes
 - **CHANGELOG.md must be in uncommitted changes, otherwise Codex cannot see intention description**
