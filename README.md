@@ -11,7 +11,7 @@ A curated Agent Skills collection published by BenedictKing.
 - `firecrawl-scraper` — Scrape pages, extract structured data, screenshots, and PDFs via Firecrawl
 - `tavily-web` — Web research, extraction, crawl, map, and structured research via Tavily
 - `codex-review` — Codex-based code review workflow for pending changes or recent commits
-- `gpt-image-2-api` — Generate and edit images with gpt-image-2 via OpenAI-compatible image or chat APIs
+- `gpt-image-2-api` — Generate and edit images with gpt-image-2 family models (default gpt-image-2.6, no streaming) via OpenAI-compatible image or chat APIs
 
 ## Repository layout
 

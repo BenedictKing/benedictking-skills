@@ -70,13 +70,11 @@ const VALUE_ARGS = new Set([
   '--output',
   '--output-compression',
   '--output-format',
-  '--partial-images',
   '--prompt',
   '--protocol',
   '--quality',
   '--response-format',
   '--size',
-  '--stream',
   '--style',
   '--user',
 ]);
@@ -121,6 +119,16 @@ function parseJsonObject(value, source) {
     throw new Error(`${source} must be a JSON object`);
   }
   return parsed;
+}
+
+// 流式会被部分上游按分片多次计费，且本脚本只保存最终图片，因此禁止任何流式参数。
+const STREAMING_KEYS = ['stream', 'partial_images'];
+
+function assertNoStreaming(params, source) {
+  const found = STREAMING_KEYS.filter((key) => key in params);
+  if (found.length > 0) {
+    throw new Error(`${source} must not set ${found.join(', ')}: streaming is disabled (it may be billed per chunk)`);
+  }
 }
 
 function endpointPath(protocol, operation) {
@@ -337,20 +345,19 @@ function parseOptionalInt(value, name) {
   return parsed;
 }
 
-function buildExtraParams({ operation, background, moderation, outputCompression, outputFormat, partialImages, inputFidelity, style, user }) {
+function buildExtraParams({ operation, background, moderation, outputCompression, outputFormat, inputFidelity, style, user }) {
   const extra = {};
   if (background) extra.background = background;
   if (moderation) extra.moderation = moderation;
   if (outputCompression !== undefined) extra.output_compression = outputCompression;
   if (outputFormat) extra.output_format = outputFormat;
-  if (partialImages !== undefined) extra.partial_images = partialImages;
   if (operation === 'edit' && inputFidelity) extra.input_fidelity = inputFidelity;
   if (operation === 'generate' && style) extra.style = style;
   if (user) extra.user = user;
   return extra;
 }
 
-function validateArgs({ protocol, operation, n, responseFormat, outputFormat, background, partialImages, size, inputFidelity, style, stream, hasMask }) {
+function validateArgs({ protocol, n, responseFormat, outputFormat, background, inputFidelity, style, hasMask }) {
   if (!Number.isInteger(n) || n < 1 || n > 10) throw new Error('--n must be an integer between 1 and 10');
   if (background && !['transparent', 'opaque', 'auto'].includes(background)) {
     throw new Error('--background must be one of: transparent, opaque, auto');
@@ -360,9 +367,6 @@ function validateArgs({ protocol, operation, n, responseFormat, outputFormat, ba
   }
   if (outputFormat && !['png', 'jpeg', 'webp'].includes(outputFormat)) {
     throw new Error('--output-format must be one of: png, jpeg, webp');
-  }
-  if (partialImages !== undefined && (partialImages < 0 || partialImages > 3)) {
-    throw new Error('--partial-images must be an integer between 0 and 3');
   }
   if (inputFidelity && !['high', 'low'].includes(inputFidelity)) {
     throw new Error('--input-fidelity must be high or low');
@@ -377,10 +381,8 @@ function validateArgs({ protocol, operation, n, responseFormat, outputFormat, ba
     if (responseFormat) throw new Error('--response-format is not supported with openai_chat');
     if (outputFormat) throw new Error('--output-format is not supported with openai_chat');
     if (background) throw new Error('--background is not supported with openai_chat');
-    if (partialImages !== undefined) throw new Error('--partial-images is not supported with openai_chat');
     if (inputFidelity) throw new Error('--input-fidelity is not supported with openai_chat');
     if (style) throw new Error('--style is not supported with openai_chat');
-    if (stream !== undefined) throw new Error('--stream is not supported with openai_chat');
     if (hasMask) throw new Error('--mask is not supported with openai_chat');
   }
 }
@@ -415,45 +417,14 @@ function buildRequestOptions({ protocol, operation, apiKey, baseUrl, model, prom
   };
 }
 
-function parseSseEvents(text) {
-  const events = [];
-  for (const chunk of text.split(/\n\n+/)) {
-    const lines = chunk.split('\n');
-    const dataLines = lines.filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim());
-    if (dataLines.length === 0) continue;
-    const dataText = dataLines.join('\n');
-    if (!dataText || dataText === '[DONE]') continue;
-    try {
-      events.push(JSON.parse(dataText));
-    } catch {
-      continue;
-    }
-  }
-  return events;
-}
-
-function normalizePayload(protocol, operation, text) {
+function parsePayload(text) {
   try {
     return JSON.parse(text);
   } catch {
-    if (protocol !== 'openai_images') {
-      throw new Error(`Image API returned non-JSON response: ${text.slice(0, 1000)}`);
-    }
-    const events = parseSseEvents(text);
-    const finalEvent = [...events].reverse().find((event) => typeof event?.b64_json === 'string');
-    if (!finalEvent) throw new Error(`Image API returned non-JSON response: ${text.slice(0, 1000)}`);
-    const kind = operation === 'edit' ? 'image_edit' : 'image_generation';
-    return {
-      data: [{ b64_json: finalEvent.b64_json, mime_type: finalEvent.output_format ? `image/${finalEvent.output_format}` : 'image/png' }],
-      usage: finalEvent.usage,
-      output_format: finalEvent.output_format,
-      background: finalEvent.background,
-      quality: finalEvent.quality,
-      size: finalEvent.size,
-      stream_event_type: `${kind}.completed`,
-    };
+    throw new Error(`Image API returned non-JSON response: ${text.slice(0, 1000)}`);
   }
 }
+
 function printHelp() {
   console.log(`Usage:
   node scripts/gpt-image-2-api.mjs --prompt "image prompt" [--output ./out] [--size 1024x1024] [--n 1] [--output-format png|jpeg|webp] [--quality low|medium|high|auto] [--protocol openai_images|openai_chat]
@@ -468,16 +439,17 @@ Options:
   --output-compression <int>  Compression level 0-100 for jpeg/webp
   --background <str>          Background: transparent, opaque, auto
   --moderation <str>          Moderation: low, auto
-  --partial-images <int>      Streaming partial images count: 0-3
   --input-fidelity <str>      Edit fidelity: high, low
   --style <str>               Generation style for dall-e-3: vivid, natural
   --user <str>                End-user identifier for abuse monitoring
   --format <str>              Legacy alias kept for compatibility
 
+Streaming is intentionally unsupported: some providers bill each streamed chunk.
+
 Environment:
   OPENAI_API_KEY              API key for the OpenAI-compatible endpoint
   OPENAI_BASE_URL             Base URL, for example http://127.0.0.1:3688/v1
-  OPENAI_IMAGE_MODEL          Image model, defaults to gpt-image-2
+  OPENAI_IMAGE_MODEL          Image model, defaults to gpt-image-2.6
   OPENAI_IMAGE_PROTOCOL       openai_images or openai_chat, defaults to openai_images
   OPENAI_IMAGE_SIZE           Image size, defaults to 1024x1024
   OPENAI_IMAGE_QUALITY        Optional image quality
@@ -488,10 +460,8 @@ Environment:
   OPENAI_IMAGE_BACKGROUND     Optional background: transparent, opaque, auto
   OPENAI_IMAGE_MODERATION     Optional moderation: low, auto
   OPENAI_IMAGE_OUTPUT_COMPRESSION Optional compression 0-100 for jpeg/webp
-  OPENAI_IMAGE_PARTIAL_IMAGES Optional streaming partial image count: 0-3
   OPENAI_IMAGE_INPUT_FIDELITY Optional edit fidelity: high, low
   OPENAI_IMAGE_STYLE          Optional generation style for dall-e-3: vivid, natural
-  OPENAI_IMAGE_STREAM         Optional openai_images SSE toggle: true, false
   OPENAI_IMAGE_USER           Optional end-user identifier
   OPENAI_IMAGE_EXTRA_JSON     Optional JSON object merged into the request body
 `);
@@ -507,7 +477,7 @@ async function main() {
 
   const apiKey = readEnvValue(skillEnv, 'OPENAI_API_KEY');
   const baseUrl = readArg('--base-url', readEnvValue(skillEnv, 'OPENAI_BASE_URL') || 'http://127.0.0.1:3688/v1').replace(/\/+$/, '');
-  const model = readArg('--model', readEnvValue(skillEnv, 'OPENAI_IMAGE_MODEL') || 'gpt-image-2');
+  const model = readArg('--model', readEnvValue(skillEnv, 'OPENAI_IMAGE_MODEL') || 'gpt-image-2.6');
   const protocol = normalizeProtocol(readArg('--protocol', readEnvValue(skillEnv, 'OPENAI_IMAGE_PROTOCOL') || 'openai_images'));
   const prompt = readArg('--prompt', collectPositionalPrompt()).trim();
   const size = readArg('--size', readEnvValue(skillEnv, 'OPENAI_IMAGE_SIZE') || '1024x1024');
@@ -519,13 +489,11 @@ async function main() {
   const background = readArg('--background', readEnvValue(skillEnv, 'OPENAI_IMAGE_BACKGROUND'));
   const moderation = readArg('--moderation', readEnvValue(skillEnv, 'OPENAI_IMAGE_MODERATION'));
   const outputCompression = parseOptionalInt(readArg('--output-compression', readEnvValue(skillEnv, 'OPENAI_IMAGE_OUTPUT_COMPRESSION')), '--output-compression');
-  const partialImages = parseOptionalInt(readArg('--partial-images', readEnvValue(skillEnv, 'OPENAI_IMAGE_PARTIAL_IMAGES')), '--partial-images');
   const inputFidelity = readArg('--input-fidelity', readEnvValue(skillEnv, 'OPENAI_IMAGE_INPUT_FIDELITY'));
   const style = readArg('--style', readEnvValue(skillEnv, 'OPENAI_IMAGE_STYLE'));
-  const streamValue = readArg('--stream', readEnvValue(skillEnv, 'OPENAI_IMAGE_STREAM'));
-  const stream = streamValue === undefined ? undefined : streamValue === 'true';
   const user = readArg('--user', readEnvValue(skillEnv, 'OPENAI_IMAGE_USER'));
   const cliExtraParams = parseJsonObject(readArg('--extra-json', readEnvValue(skillEnv, 'OPENAI_IMAGE_EXTRA_JSON')), 'OPENAI_IMAGE_EXTRA_JSON');
+  assertNoStreaming(cliExtraParams, '--extra-json / OPENAI_IMAGE_EXTRA_JSON');
   const outputDir = path.resolve(readArg('--output', process.cwd()));
   const imagePaths = [...readArgs('--image'), ...readArgs('--input')];
   const inputImages = await Promise.all(imagePaths.map(readImageInput));
@@ -537,7 +505,7 @@ async function main() {
   if (!prompt) throw new Error('Prompt is required. Use --prompt "..."');
   if (mask && operation !== 'edit') throw new Error('--mask requires at least one --image');
 
-  validateArgs({ protocol, operation, n, responseFormat, outputFormat, background, partialImages, size, inputFidelity, style, stream, hasMask: Boolean(maskValue) });
+  validateArgs({ protocol, n, responseFormat, outputFormat, background, inputFidelity, style, hasMask: Boolean(maskValue) });
 
   const baseExtraParams = buildExtraParams({
     operation,
@@ -545,12 +513,10 @@ async function main() {
     moderation,
     outputCompression,
     outputFormat,
-    partialImages,
     inputFidelity,
     style,
     user,
   });
-  if (stream !== undefined) baseExtraParams.stream = stream;
   const extraParams = mergeExtraParams(baseExtraParams, cliExtraParams);
   const { url, options } = buildRequestOptions({
     protocol,
@@ -575,7 +541,7 @@ async function main() {
     throw new Error(`Image API failed with HTTP ${response.status}: ${text}`);
   }
 
-  const payload = normalizePayload(protocol, operation, text);
+  const payload = parsePayload(text);
   await mkdir(outputDir, { recursive: true });
   const saved = [];
   const images = collectImages(protocol, payload);

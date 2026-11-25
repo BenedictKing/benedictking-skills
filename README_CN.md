@@ -11,7 +11,7 @@ BenedictKing 发布的 Agent Skills 合集仓库。
 - `firecrawl-scraper` — 基于 Firecrawl 的网页抓取、结构化提取、截图与 PDF 解析
 - `tavily-web` — 基于 Tavily 的网页搜索、提取、爬取、站点映射与研究任务
 - `codex-review` — 基于 Codex 的代码审核工作流
-- `gpt-image-2-api` — 通过 OpenAI-compatible 图片或 Chat API 生成与编辑 gpt-image-2 图片
+- `gpt-image-2-api` — 通过 OpenAI-compatible 图片或 Chat API 生成与编辑 gpt-image-2 系列图片（默认 gpt-image-2.6，禁用流式）
 
 ## 仓库结构
 

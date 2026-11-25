@@ -1,18 +1,18 @@
 ---
 name: gpt-image-2-api
-description: Generate and edit images with gpt-image-2 through a third-party OpenAI-compatible API using .env-configured OPENAI_API_KEY and OPENAI_BASE_URL values. Use when the user asks to create images, edit reference images, create visual assets, illustrations, or image variations with a configurable API endpoint.
+description: Generate and edit images with gpt-image-2 family models (gpt-image-2 / 2.5 / 2.6, defaulting to gpt-image-2.6) through a third-party OpenAI-compatible API using .env-configured OPENAI_API_KEY and OPENAI_BASE_URL values. Never uses streaming. Use when the user asks to create images, edit reference images, create visual assets, illustrations, or image variations with a configurable API endpoint.
 license: MIT
 compatibility: Designed for Claude Code; requires Node.js and access to an OpenAI-compatible image API.
 metadata:
   author: BenedictKing
-  version: "1.3.0"
+  version: "1.4.0"
   user-invocable: "true"
 allowed-tools: Bash Read Write
 ---
 # gpt-image-2-api
 
 ## Purpose
-Generate and edit images with gpt-image-2 through a third-party OpenAI-compatible API using .env-configured OPENAI_API_KEY and OPENAI_BASE_URL values. Use when the user asks to create images, edit reference images, create visual assets, illustrations, or image variations with a configurable API endpoint.
+Generate and edit images with gpt-image-2 family models (gpt-image-2 / 2.5 / 2.6, defaulting to gpt-image-2.6) through a third-party OpenAI-compatible API using .env-configured OPENAI_API_KEY and OPENAI_BASE_URL values. Never uses streaming. Use when the user asks to create images, edit reference images, create visual assets, illustrations, or image variations with a configurable API endpoint.
 
 ## Environment Variables & API Key
 
@@ -27,7 +27,7 @@ You can manage the `.env` file manually or through `skill-master env set`.
 
 - `OPENAI_API_KEY`: API key for the third-party endpoint
 - `OPENAI_BASE_URL`: OpenAI-compatible base URL, for example `http://127.0.0.1:3688/v1`
-- `OPENAI_IMAGE_MODEL`: image model name, defaults to `gpt-image-2`
+- `OPENAI_IMAGE_MODEL`: image model name, defaults to `gpt-image-2.6` (see [Models](#models))
 - `OPENAI_IMAGE_PROTOCOL`: `openai_images` or `openai_chat`, defaults to `openai_images`
 - `OPENAI_IMAGE_SIZE`: image size, defaults to `1024x1024`
 - `OPENAI_IMAGE_QUALITY`: optional image quality
@@ -38,18 +38,32 @@ You can manage the `.env` file manually or through `skill-master env set`.
 - `OPENAI_IMAGE_BACKGROUND`: optional background (`transparent`, `opaque`, `auto`)
 - `OPENAI_IMAGE_MODERATION`: optional moderation level (`low`, `auto`)
 - `OPENAI_IMAGE_OUTPUT_COMPRESSION`: optional compression level `0`–`100` for `jpeg` / `webp`
-- `OPENAI_IMAGE_PARTIAL_IMAGES`: optional streaming partial image count `0`–`3`
 - `OPENAI_IMAGE_INPUT_FIDELITY`: optional edit fidelity (`high`, `low`)
 - `OPENAI_IMAGE_STYLE`: optional generation style for `dall-e-3` (`vivid`, `natural`)
-- `OPENAI_IMAGE_STREAM`: optional `openai_images` SSE toggle (`true`, `false`)
 - `OPENAI_IMAGE_USER`: optional end-user identifier
-- `OPENAI_IMAGE_EXTRA_JSON`: optional JSON object merged into the request body
+- `OPENAI_IMAGE_EXTRA_JSON`: optional JSON object merged into the request body (must not contain `stream` or `partial_images`)
+
+## Models
+
+| Model | Notes |
+|-------|-------|
+| `gpt-image-2.6` | Default. Latest gpt-image generation |
+| `gpt-image-2.6-flare` / `gpt-image-2.6-sunburst` | 2.6 variants exposed by some providers |
+| `gpt-image-2.5` / `gpt-image-2.5-flare` / `gpt-image-2.5-sunburst` | Previous generation |
+| `gpt-image-2` | Original model, kept for compatibility |
+| `nano-banana-pro` / `nano-banana-2.1` | Google models on some OpenAI-compatible gateways; if `/images/*` rejects them, retry with `--protocol openai_chat` |
+
+Model availability depends on the configured endpoint. Pass `--model` or set `OPENAI_IMAGE_MODEL` to switch.
+
+## No Streaming
+
+Streaming is intentionally unsupported. Some providers bill each streamed chunk as a separate request, and this script only saves the final image anyway. The script never sends `stream` / `partial_images`, and rejects them if they appear in `--extra-json` or `OPENAI_IMAGE_EXTRA_JSON`. Do not work around this with raw `curl` calls that set `stream: true`.
 
 ## Workflow
 1. Use `scripts/gpt-image-2-api.mjs` for text-to-image and image-edit requests.
 2. If required `OPENAI_*` settings are not available from the current environment or this skill's `.env`, stop and tell the user which variables need to be configured.
 3. `openai_images` generation uses `/images/generations` with JSON; `openai_images` editing uses `/images/edits` with `multipart/form-data`.
-4. Use `OPENAI_IMAGE_PROTOCOL=openai_chat` only when the endpoint lacks `/images/*` support; it does not support `--mask`, `--background`, `--output-format`, or streaming image events.
+4. Use `OPENAI_IMAGE_PROTOCOL=openai_chat` only when the endpoint lacks `/images/*` support; it does not support `--mask`, `--background`, or `--output-format`.
 5. Add one or more `--image <path>` arguments to edit/reference an input image.
 6. Use `--mask <path>` or `--mask auto` only with `openai_images` edits.
 7. Save generated files under the user requested output directory, or the current working directory when unspecified.
@@ -98,7 +112,7 @@ OPENAI_IMAGE_PROTOCOL=openai_chat node scripts/gpt-image-2-api.mjs --prompt "a c
 | Parameter | Required | Type | Default | Description |
 |-----------|----------|------|---------|-------------|
 | `prompt` | yes | string | — | Text description for generation or edit |
-| `model` | no | string | `gpt-image-2` | Image model name |
+| `model` | no | string | `gpt-image-2.6` | Image model name |
 | `n` | no | integer | `1` | Number of images, range 1–10 |
 | `size` | no | string | `1024x1024` | Output size passed through to the upstream endpoint |
 | `quality` | no | string | endpoint default | `low`, `medium`, `high`, `auto` |
@@ -107,7 +121,6 @@ OPENAI_IMAGE_PROTOCOL=openai_chat node scripts/gpt-image-2-api.mjs --prompt "a c
 | `background` | no | string | endpoint default | `transparent`, `opaque`, `auto` |
 | `moderation` | no | string | endpoint default | `low`, `auto` |
 | `output-compression` | no | integer | endpoint default | Compression 0–100 for `jpeg`/`webp` |
-| `partial-images` | no | integer | endpoint default | Streaming partial image count `0`–`3` |
 | `input-fidelity` | no | string | endpoint default | Edit fidelity: `high`, `low` |
 | `style` | no | string | endpoint default | Generation style for `dall-e-3`: `vivid`, `natural` |
 | `user` | no | string | — | End-user identifier |
