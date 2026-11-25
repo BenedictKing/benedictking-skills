@@ -58,11 +58,15 @@ function hasFlag(name) {
 const VALUE_ARGS = new Set([
   '--background',
   '--base-url',
+  '--complexity',
   '--extra-json',
+  '--frame-count',
+  '--frame-duration-ms',
   '--format',
   '--image',
   '--input',
   '--input-fidelity',
+  '--markup',
   '--mask',
   '--model',
   '--moderation',
@@ -74,7 +78,10 @@ const VALUE_ARGS = new Set([
   '--protocol',
   '--quality',
   '--response-format',
+  '--safety-identifier',
   '--size',
+  '--svg-model',
+  '--svg-reasoning',
   '--style',
   '--user',
 ]);
@@ -168,7 +175,7 @@ function buildRequestBody({ protocol, model, prompt, size, quality, n, responseF
   return { ...body, ...extraParams };
 }
 
-function buildMultipartBody({ model, prompt, size, quality, n, responseFormat, outputFormat, inputImages, mask, extraParams }) {
+function buildMultipartBody({ model, prompt, size, quality, n, responseFormat, outputFormat, inputImages, mask, markup, extraParams }) {
   const form = new FormData();
   form.set('model', model);
   form.set('prompt', prompt);
@@ -191,6 +198,8 @@ function buildMultipartBody({ model, prompt, size, quality, n, responseFormat, o
       form.set('mask', new Blob([mask.bytes], { type: mask.mimeType }), mask.name);
     }
   }
+
+  if (markup) form.set('markup', new Blob([markup.bytes], { type: markup.mimeType }), markup.name);
 
   for (const [key, value] of Object.entries(extraParams)) {
     appendFormValue(form, key, value);
@@ -232,6 +241,7 @@ function mimeTypeForPath(filePath) {
   if (ext === '.png') return 'image/png';
   if (ext === '.webp') return 'image/webp';
   if (ext === '.gif') return 'image/gif';
+  if (ext === '.svg') return 'image/svg+xml';
   return 'application/octet-stream';
 }
 
@@ -264,7 +274,8 @@ function addImageObject(value, images) {
   if (!value || typeof value !== 'object') return;
   const imageBase64 = value.b64_json || value.image_base64;
   if (typeof imageBase64 === 'string' && imageBase64) {
-    images.push(decodeBase64Image(imageBase64, value.mime_type || value.mimeType || 'image/png'));
+    const mimeType = value.mime_type || value.mimeType || mimeTypeForOutputFormat(value.output_format) || 'image/png';
+    images.push(decodeBase64Image(imageBase64, mimeType));
   }
   if (typeof value.url === 'string') addImageUrl(value.url, images);
   if (value.image_url && typeof value.image_url.url === 'string') addImageUrl(value.image_url.url, images);
@@ -272,12 +283,18 @@ function addImageObject(value, images) {
   if (value.image && typeof value.image === 'object') addImageObject(value.image, images);
 }
 
+function mimeTypeForOutputFormat(outputFormat) {
+  if (!outputFormat) return undefined;
+  return outputFormat === 'svg' ? 'image/svg+xml' : `image/${outputFormat}`;
+}
+
 function collectImages(protocol, payload) {
   if (protocol === 'openai_images') {
+    const payloadMimeType = mimeTypeForOutputFormat(payload.output_format);
     return Array.isArray(payload.data)
       ? payload.data.flatMap((item) => {
           const images = [];
-          addImageObject(item, images);
+          addImageObject({ mime_type: payloadMimeType, ...item }, images);
           return images;
         })
       : [];
@@ -338,6 +355,7 @@ function extensionForMimeType(mimeType) {
   if (normalized.includes('png')) return '.png';
   if (normalized.includes('webp')) return '.webp';
   if (normalized.includes('gif')) return '.gif';
+  if (normalized.includes('svg') || normalized.includes('xml')) return '.svg';
   return '.bin';
 }
 
@@ -348,7 +366,7 @@ function parseOptionalInt(value, name) {
   return parsed;
 }
 
-function buildExtraParams({ operation, background, moderation, outputCompression, outputFormat, inputFidelity, style, user }) {
+function buildExtraParams({ operation, background, moderation, outputCompression, outputFormat, inputFidelity, style, user, complexity, safetyIdentifier, frameCount, frameDurationMs, svgModel, svgReasoning }) {
   const extra = {};
   if (background) extra.background = background;
   if (moderation) extra.moderation = moderation;
@@ -357,10 +375,19 @@ function buildExtraParams({ operation, background, moderation, outputCompression
   if (operation === 'edit' && inputFidelity) extra.input_fidelity = inputFidelity;
   if (operation === 'generate' && style) extra.style = style;
   if (user) extra.user = user;
+  if (complexity) extra.complexity = complexity;
+  if (safetyIdentifier) extra.safety_identifier = safetyIdentifier;
+  if (frameCount !== undefined) extra.frame_count = frameCount;
+  if (frameDurationMs !== undefined) extra.frame_duration_ms = frameDurationMs;
+  if (svgModel || svgReasoning) {
+    extra.svg = {};
+    if (svgModel) extra.svg.model = svgModel;
+    if (svgReasoning) extra.svg.reasoning = { effort: svgReasoning };
+  }
   return extra;
 }
 
-function validateArgs({ protocol, n, responseFormat, outputFormat, background, inputFidelity, style, hasMask }) {
+function validateArgs({ protocol, operation, n, responseFormat, outputFormat, background, inputFidelity, style, hasMask, complexity, frameCount, frameDurationMs, svgModel, svgReasoning, markup }) {
   if (!Number.isInteger(n) || n < 1 || n > 10) throw new Error('--n must be an integer between 1 and 10');
   if (background && !['transparent', 'opaque', 'auto'].includes(background)) {
     throw new Error('--background must be one of: transparent, opaque, auto');
@@ -368,8 +395,22 @@ function validateArgs({ protocol, n, responseFormat, outputFormat, background, i
   if (responseFormat && !['url', 'b64_json'].includes(responseFormat)) {
     throw new Error('--response-format must be url or b64_json');
   }
-  if (outputFormat && !['png', 'jpeg', 'webp'].includes(outputFormat)) {
-    throw new Error('--output-format must be one of: png, jpeg, webp');
+  if (outputFormat && !['png', 'jpeg', 'webp', 'gif', 'svg'].includes(outputFormat)) {
+    throw new Error('--output-format must be one of: png, jpeg, webp, gif, svg');
+  }
+  if (complexity && !['low', 'medium', 'high'].includes(complexity)) {
+    throw new Error('--complexity must be low, medium or high');
+  }
+  if (outputFormat === 'gif') {
+    if (frameCount !== undefined && (frameCount < 2 || frameCount > 16)) throw new Error('--frame-count must be 2-16');
+    if (frameDurationMs !== undefined && (frameDurationMs < 20 || frameDurationMs > 2000)) throw new Error('--frame-duration-ms must be 20-2000');
+  } else if (frameCount !== undefined || frameDurationMs !== undefined) {
+    throw new Error('--frame-count and --frame-duration-ms require --output-format gif');
+  }
+  if (svgModel || svgReasoning || outputFormat === 'svg') {
+    if (operation !== 'generate') throw new Error('SVG output is only supported for generation, not edits');
+    if (outputFormat !== 'svg') throw new Error('--svg-model and --svg-reasoning require --output-format svg');
+    if (n !== 1) throw new Error('SVG output requires --n 1');
   }
   if (inputFidelity && !['high', 'low'].includes(inputFidelity)) {
     throw new Error('--input-fidelity must be high or low');
@@ -387,6 +428,10 @@ function validateArgs({ protocol, n, responseFormat, outputFormat, background, i
     if (inputFidelity) throw new Error('--input-fidelity is not supported with openai_chat');
     if (style) throw new Error('--style is not supported with openai_chat');
     if (hasMask) throw new Error('--mask is not supported with openai_chat');
+    if (markup) throw new Error('--markup is not supported with openai_chat');
+    if (complexity) throw new Error('--complexity is not supported with openai_chat');
+    if (frameCount !== undefined || frameDurationMs !== undefined) throw new Error('GIF options are not supported with openai_chat');
+    if (svgModel || svgReasoning) throw new Error('SVG options are not supported with openai_chat');
   }
 }
 
@@ -394,7 +439,7 @@ function mergeExtraParams(baseParams, cliExtraParams) {
   return { ...baseParams, ...cliExtraParams };
 }
 
-function buildRequestOptions({ protocol, operation, apiKey, baseUrl, model, prompt, size, quality, n, responseFormat, outputFormat, inputImages, mask, extraParams }) {
+function buildRequestOptions({ protocol, operation, apiKey, baseUrl, model, prompt, size, quality, n, responseFormat, outputFormat, inputImages, mask, markup, extraParams }) {
   const endpoint = `${baseUrl}${endpointPath(protocol, operation)}`;
   const headers = { Authorization: `Bearer ${apiKey}` };
 
@@ -404,7 +449,7 @@ function buildRequestOptions({ protocol, operation, apiKey, baseUrl, model, prom
       options: {
         method: 'POST',
         headers,
-        body: buildMultipartBody({ model, prompt, size, quality, n, responseFormat, outputFormat, inputImages, mask, extraParams }),
+        body: buildMultipartBody({ model, prompt, size, quality, n, responseFormat, outputFormat, inputImages, mask, markup, extraParams }),
       },
     };
   }
@@ -430,21 +475,28 @@ function parsePayload(text) {
 
 function printHelp() {
   console.log(`Usage:
-  node scripts/gpt-image-2-api.mjs --prompt "image prompt" [--output ./out] [--size 1024x1024] [--n 1] [--output-format png|jpeg|webp] [--quality low|medium|high|auto] [--protocol openai_images|openai_chat]
-  node scripts/gpt-image-2-api.mjs --prompt "edit prompt" --image ./input.png [--image ./reference.png] [--mask ./mask.png|auto] [--output ./out]
+  node scripts/gpt-image-2-api.mjs --prompt "image prompt" [--output ./out] [--size 1024x1024] [--n 1] [--output-format png|jpeg|webp|gif|svg] [--quality low|medium|high|xhigh|max|auto] [--protocol openai_images|openai_chat]
+  node scripts/gpt-image-2-api.mjs --prompt "edit prompt" --image ./input.png [--image ./reference.png] [--mask ./mask.png|auto | --markup ./overlay.png] [--output ./out]
 
 Options:
   --n <int>                   Number of images (1-10), defaults to 1
   --size <str>                Image size passed through to the upstream endpoint
-  --quality <str>             Image quality: low, medium, high, auto
-  --response-format <str>     Response format: url, b64_json
-  --output-format <str>       Output format: png, jpeg, webp
+  --quality <str>             Image quality: low, medium, high, xhigh, max, auto
+  --complexity <str>          Planning effort (2.5/2.6): low, medium, high; defaults to high
+  --response-format <str>     Legacy dall-e models only: url, b64_json
+  --output-format <str>       Output format: png, jpeg, webp, gif, svg
+  --frame-count <int>         GIF only: 2-16 frames, defaults to 9
+  --frame-duration-ms <int>   GIF only: 20-2000 ms per frame, defaults to 200
+  --svg-model <str>           SVG only: author model for output_format=svg
+  --svg-reasoning <str>       SVG only: author reasoning effort, e.g. low, high, max
   --output-compression <int>  Compression level 0-100 for jpeg/webp
   --background <str>          Background: transparent, opaque, auto
   --moderation <str>          Moderation: low, auto
-  --input-fidelity <str>      Edit fidelity: high, low
-  --style <str>               Generation style for dall-e-3: vivid, natural
-  --user <str>                End-user identifier for abuse monitoring
+  --markup <path>             Edit only: transparent PNG annotation layer; mutually exclusive with --mask
+  --input-fidelity <str>      Edit fidelity: high, low (gpt-image-1.5 / 1-mini; omit for gpt-image-2.x)
+  --style <str>               Legacy dall-e-3 only: vivid, natural
+  --safety-identifier <str>   End-user identifier (hash it); replaces deprecated --user
+  --user <str>                Deprecated: use --safety-identifier
   --format <str>              Legacy alias kept for compatibility
 
 Streaming is intentionally unsupported: some providers bill each streamed chunk.
@@ -452,20 +504,28 @@ Streaming is intentionally unsupported: some providers bill each streamed chunk.
 Environment:
   OPENAI_API_KEY              API key for the OpenAI-compatible endpoint
   OPENAI_BASE_URL             Base URL, for example http://127.0.0.1:3688/v1
-  OPENAI_IMAGE_MODEL          Image model, defaults to gpt-image-2.6
+  OPENAI_IMAGE_MODEL          Image model, defaults to gpt-image-2.6 (provider alias;
+                            official API names are gpt-image-2.6-sunburst / -flare)
   OPENAI_IMAGE_PROTOCOL       openai_images or openai_chat, defaults to openai_images
   OPENAI_IMAGE_SIZE           Image size, defaults to 1024x1024
-  OPENAI_IMAGE_QUALITY        Optional image quality
+  OPENAI_IMAGE_QUALITY        Optional image quality: low, medium, high, xhigh, max, auto
+  OPENAI_IMAGE_COMPLEXITY     Optional planning effort: low, medium, high
+  OPENAI_IMAGE_SAFETY_IDENTIFIER Optional end-user identifier; replaces OPENAI_IMAGE_USER
   OPENAI_IMAGE_N              Number of images (1-10), defaults to 1
-  OPENAI_IMAGE_OUTPUT_FORMAT  Optional output format: png, jpeg, webp
-  OPENAI_IMAGE_FORMAT         Legacy output format alias: png, jpeg, webp
-  OPENAI_IMAGE_RESPONSE_FORMAT Optional response format: url, b64_json
+  OPENAI_IMAGE_OUTPUT_FORMAT  Optional output format: png, jpeg, webp, gif, svg
+  OPENAI_IMAGE_FORMAT         Legacy alias for OPENAI_IMAGE_OUTPUT_FORMAT
+  OPENAI_IMAGE_FRAME_COUNT    Optional GIF frame count 2-16
+  OPENAI_IMAGE_FRAME_DURATION_MS Optional GIF frame delay 20-2000 ms
+  OPENAI_IMAGE_SVG_MODEL      Optional SVG author model
+  OPENAI_IMAGE_SVG_REASONING  Optional SVG author reasoning effort
+  OPENAI_IMAGE_MARKUP         Optional markup overlay path for edits
+  OPENAI_IMAGE_RESPONSE_FORMAT Legacy dall-e models only: url, b64_json
   OPENAI_IMAGE_BACKGROUND     Optional background: transparent, opaque, auto
   OPENAI_IMAGE_MODERATION     Optional moderation: low, auto
   OPENAI_IMAGE_OUTPUT_COMPRESSION Optional compression 0-100 for jpeg/webp
-  OPENAI_IMAGE_INPUT_FIDELITY Optional edit fidelity: high, low
-  OPENAI_IMAGE_STYLE          Optional generation style for dall-e-3: vivid, natural
-  OPENAI_IMAGE_USER           Optional end-user identifier
+  OPENAI_IMAGE_INPUT_FIDELITY Optional edit fidelity: high, low (omit for gpt-image-2.x)
+  OPENAI_IMAGE_STYLE          Legacy dall-e-3 only: vivid, natural
+  OPENAI_IMAGE_USER           Deprecated: use OPENAI_IMAGE_SAFETY_IDENTIFIER
   OPENAI_IMAGE_EXTRA_JSON     Optional JSON object merged into the request body
 `);
 }
@@ -494,6 +554,12 @@ async function main() {
   const outputCompression = parseOptionalInt(readArg('--output-compression', readEnvValue(skillEnv, 'OPENAI_IMAGE_OUTPUT_COMPRESSION')), '--output-compression');
   const inputFidelity = readArg('--input-fidelity', readEnvValue(skillEnv, 'OPENAI_IMAGE_INPUT_FIDELITY'));
   const style = readArg('--style', readEnvValue(skillEnv, 'OPENAI_IMAGE_STYLE'));
+  const complexity = readArg('--complexity', readEnvValue(skillEnv, 'OPENAI_IMAGE_COMPLEXITY'));
+  const safetyIdentifier = readArg('--safety-identifier', readEnvValue(skillEnv, 'OPENAI_IMAGE_SAFETY_IDENTIFIER'));
+  const frameCount = parseOptionalInt(readArg('--frame-count', readEnvValue(skillEnv, 'OPENAI_IMAGE_FRAME_COUNT')), '--frame-count');
+  const frameDurationMs = parseOptionalInt(readArg('--frame-duration-ms', readEnvValue(skillEnv, 'OPENAI_IMAGE_FRAME_DURATION_MS')), '--frame-duration-ms');
+  const svgModel = readArg('--svg-model', readEnvValue(skillEnv, 'OPENAI_IMAGE_SVG_MODEL'));
+  const svgReasoning = readArg('--svg-reasoning', readEnvValue(skillEnv, 'OPENAI_IMAGE_SVG_REASONING'));
   const user = readArg('--user', readEnvValue(skillEnv, 'OPENAI_IMAGE_USER'));
   const cliExtraParams = parseJsonObject(readArg('--extra-json', readEnvValue(skillEnv, 'OPENAI_IMAGE_EXTRA_JSON')), 'OPENAI_IMAGE_EXTRA_JSON');
   assertNoStreaming(cliExtraParams, '--extra-json / OPENAI_IMAGE_EXTRA_JSON');
@@ -502,13 +568,17 @@ async function main() {
   const inputImages = await Promise.all(imagePaths.map(readImageInput));
   const maskValue = readArg('--mask');
   const mask = maskValue && maskValue !== 'auto' ? await readImageInput(maskValue) : maskValue;
+  const markupPath = readArg('--markup', readEnvValue(skillEnv, 'OPENAI_IMAGE_MARKUP'));
+  const markup = markupPath ? await readImageInput(markupPath) : undefined;
   const operation = inputImages.length > 0 ? 'edit' : 'generate';
 
   if (!apiKey) throw new Error('OPENAI_API_KEY is required');
   if (!prompt) throw new Error('Prompt is required. Use --prompt "..."');
   if (mask && operation !== 'edit') throw new Error('--mask requires at least one --image');
+  if (markup && operation !== 'edit') throw new Error('--markup requires at least one --image');
+  if (markup && mask) throw new Error('--markup and --mask are mutually exclusive');
 
-  validateArgs({ protocol, n, responseFormat, outputFormat, background, inputFidelity, style, hasMask: Boolean(maskValue) });
+  validateArgs({ protocol, operation, n, responseFormat, outputFormat, background, inputFidelity, style, hasMask: Boolean(maskValue), markup, complexity, frameCount, frameDurationMs, svgModel, svgReasoning });
 
   const baseExtraParams = buildExtraParams({
     operation,
@@ -519,6 +589,12 @@ async function main() {
     inputFidelity,
     style,
     user,
+    complexity,
+    safetyIdentifier,
+    frameCount,
+    frameDurationMs,
+    svgModel,
+    svgReasoning,
   });
   const extraParams = mergeExtraParams(baseExtraParams, cliExtraParams);
   const { url, options } = buildRequestOptions({
@@ -535,6 +611,7 @@ async function main() {
     outputFormat,
     inputImages,
     mask,
+    markup,
     extraParams,
   });
 
