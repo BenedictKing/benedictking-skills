@@ -178,8 +178,10 @@ function buildMultipartBody({ model, prompt, size, quality, n, responseFormat, o
   if (responseFormat) form.set('response_format', responseFormat);
   if (outputFormat) form.set('output_format', outputFormat);
 
+  // 与 OpenAI 官方 SDK 一致：单图用 image，多图用 image[]
+  const imageField = inputImages.length > 1 ? 'image[]' : 'image';
   for (const image of inputImages) {
-    form.append('image', new Blob([image.bytes], { type: image.mimeType }), image.name);
+    form.append(imageField, new Blob([image.bytes], { type: image.mimeType }), image.name);
   }
 
   if (mask) {
@@ -241,6 +243,7 @@ async function readImageInput(filePath) {
   return {
     name: path.basename(resolvedPath),
     mimeType,
+    bytes,
     base64,
     dataUrl: `data:${mimeType};base64,${base64}`,
   };
